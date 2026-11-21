@@ -436,6 +436,34 @@ def verify_receipt(pin, receipt_root, label):
     check(outcomes["build"] == "success", label)
 
 
+def executor_preflight(argv):
+    parser = argparse.ArgumentParser(description="Resolve the on-demand Kubernetes Executor image.")
+    parser.add_argument("candidate_manifest", type=Path)
+    parser.add_argument("token_file")
+    args = parser.parse_args(argv)
+    check(matches(args.token_file, r"/[^,\\\x00-\x1f\x7f]+"), "tokenFile")
+    token_file = Path(args.token_file)
+    private_file(token_file, "tokenFile")
+    token = read_bytes(token_file, "tokenFile").strip()
+    check(re.fullmatch(rb"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", token), "tokenFile")
+
+    manifest = ROOT / args.candidate_manifest
+    candidate = read_json(manifest, "candidateManifest")
+    shape(candidate, "schema stage chartRevision inputRevision e2eRevision components", "candidateManifest")
+    try:
+        chart_revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        raise InvalidInput("candidateManifest.chartRevision") from None
+    # The coordinator supplies and verifies the independently selected input and E2E revisions.
+    images = candidate_pins(
+        candidate, manifest.parent / "receipts", chart_revision,
+        candidate["inputRevision"], candidate["e2eRevision"],
+    )
+    print(images["executor_k8s_openhands"])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("candidate", "receipt-root", "runtime-target", "owned-target"):
@@ -513,6 +541,9 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        if sys.argv[1:2] == ["executor"]:
+            executor_preflight(sys.argv[2:])
+        else:
+            main()
     except InvalidInput as error:
         sys.exit(f"Preflight rejected input: {error}")

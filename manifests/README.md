@@ -254,3 +254,63 @@ Readiness of the application requires Gateway OIDC discovery through the
 actual host relay, Keycloak client readback and Gateway `/healthz`. A Helm
 result alone does not establish these conditions. Apply the runner's
 ownership, locking, recovery and cleanup policies before enabling E2E.
+
+### On-demand Kubernetes OpenHands Executor
+
+Use the checked-out deployment candidate revision. Keep the selected version-1
+candidate JSON and its checksum-addressed receipt files together, with the
+receipts under the candidate file's sibling `receipts/` directory. The
+coordinator verifies the candidate against the independently selected input and
+Gitea E2E revisions, qualification runs and immutable registry artifacts before
+offering it for installation. Executor preflight reuses candidate validation,
+checks the candidate's chart revision against the deployment checkout's HEAD and
+selects the exact `executor_k8s_openhands` image pin.
+
+Save the one-time Executor Registry JWT in an owner-readable regular file in a
+private directory. Use mode `0600` and an absolute path. Keep the file private
+and unchanged until the operation completes. Use a separate metadata file
+`.helmfile/executor.yaml`:
+
+```yaml
+namespace: example-worktree-dev
+releaseName: executor-k8s-openhands-case-a
+candidateManifest: manifests/selected-candidate.json
+tokenFile: /private/flowai/executor.jwt
+```
+
+Helmfile resolves relative state-values paths beside the state file. You can
+also pass an absolute path to metadata kept outside the checkout. The candidate
+path is absolute or relative to this repository. Use the existing owned
+namespace and a distinct release name for each case or demo. The existing
+`e2e-ff-<8 hex digits>` release names are also accepted. A case that inspects
+a finished task Pod can set `finishedCleanupDelay: 300s` in its metadata. The
+default is `0s`. Retain the same namespace and release name for reissue. From this repository run:
+
+```sh
+helmfile -f .helmfile/executor.helmfile.yaml.gotmpl -e dtu --state-values-file executor.yaml apply
+```
+
+The Helm command receives the token file path through `--set-file`. The Secret
+contains the broker configuration, and the init container installs it in the
+release's persistent data volume. Reissue changes the configuration checksum
+and replaces the controller Pod while retaining the claim. Keep operation
+output private and use synthetic input for render review. The state suppresses
+release diff output. Delete the input JWT file after the operation.
+
+The release uses the existing `local-path` StorageClass and `stand-ca` Secret
+with `ca.pem` in the target namespace. The NATS, Env Registry and Model Registry
+Services already belong to the platform deployment. Task identity and image
+selection follow the Executor Registry JWT and the task claim.
+
+For teardown, use the recorded `namespace` and `releaseName` in
+`.helmfile/executor-cleanup.yaml` and run:
+
+```sh
+helmfile -f .helmfile/executor.helmfile.yaml.gotmpl -e cleanup --state-values-file executor-cleanup.yaml destroy --deleteWait --cascade foreground
+```
+
+The teardown state needs only the release identity. The runner drains and
+releases the registered Executor for its case, reconciles its separately owned
+task Pods and verifies resource absence before releasing the slot. Verify the
+release, controller resources and claim are absent while the worktree
+namespace, shared dependencies and peer releases remain.
