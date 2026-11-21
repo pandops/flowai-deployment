@@ -1,0 +1,5 @@
+apiVersion: v2
+name: flowai-foundation
+description: Static rendering of the FlowAI namespace, origin and trust reference contract.
+type: application
+version: 0.1.0

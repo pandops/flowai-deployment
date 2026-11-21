@@ -1,0 +1,7 @@
+{{- $foundation := .Values.foundation -}}
+{{- if or (ne .Release.Namespace "foundation-preview-dev") (ne $foundation.namespace .Release.Namespace) -}}
+  {{- fail "foundation.namespace must match the static fixture namespace" -}}
+{{- end -}}
+{{- $data := dict "origin" (required "foundation.origin" $foundation.origin) "tlsReferences" (required "foundation.tls" $foundation.tls | toJson) -}}
+{{- $metadata := dict "name" .Release.Name "namespace" .Release.Namespace -}}
+{{- dict "apiVersion" "v1" "kind" "ConfigMap" "metadata" $metadata "data" $data | toPrettyJson }}

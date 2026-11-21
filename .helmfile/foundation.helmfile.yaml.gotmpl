@@ -1,0 +1,10 @@
+# Static qualification only. Runtime state will be composed by the chart slices.
+helmDefaults:
+  createNamespace: false
+  kubeContext: foundation-preview
+releases:
+  - name: flowai-foundation
+    namespace: {{ required "foundation.namespace" .Values.foundation.namespace | quote }}
+    chart: ./charts/foundation
+    values:
+      - foundation: {{ .Values.foundation | toJson }}

@@ -1,0 +1,109 @@
+# Preflight input contract
+
+`scripts/preflight.py` is the executable version-1 schema. It accepts
+strict UTF-8 JSON objects with the exact keys below. A coordinator passes
+`--candidate`, `--receipt-root`, `--chart-revision`, `--input-revision`,
+`--e2e-revision`, `--runtime-target` and `--owned-target`. The coordinator
+supplies the expected revisions independently from the checked-out public
+chart and input trees and the selected Gitea runner revision.
+
+## Public candidate
+
+The root has `schema: 1`, `stage` (`snapshot` or `stable`), `chartRevision`,
+`inputRevision`, `e2eRevision` and `components`. The input revision identifies
+the public configuration inputs from which the manifest was resolved. A
+manifest can therefore reference already-existing commits without a
+self-reference. Each revision is a full lowercase Git SHA. The components
+map requires all 15 keys in [the component catalog](components.json).
+
+Each pin has these fields.
+
+| Field | Required identity |
+| --- | --- |
+| `repository` | `pandops/<slug>` from the component catalog |
+| `sourceRevision` | Selected full source commit |
+| `buildSourceRevision` | Original full build commit, including when reused |
+| `version` | Immutable semantic-release image tag matching the candidate stage |
+| `imageDigest` | Manifest digest as `sha256:<64 lower-case hex digits>` |
+| `qualificationDigest` | SHA-256 of the exact retained public receipt bytes |
+| `schemaInputs` | Array of exact publisher inputs, with `repository`, `sourceRevision`, `path` under `schemas/` and a SHA-256 `digest` per input |
+
+For each pin, `<receipt-root>/<qualificationDigest hex>.json` contains
+`schema: 1`, the six pin fields other than `qualificationDigest`,
+`workflowPath`, integer GitHub Actions `runId`, and `outcomes`.
+The outcomes object has `unit`, `integration` and `build`. Test
+outcomes are `success` or the applicable `not-applicable` result.
+`build` must be `success`.
+
+Preflight checks completeness, receipt checksum, binding to the candidate
+and publisher revisions. The producer in task 3.2 verifies real workflow
+results and artifact provenance, compares schema inputs against the Gitea
+declarations, and resolves required upstream inputs before offering a
+deployment descriptor. Retain public receipts for each selectable manifest.
+The first selectable snapshot requires the complete qualified set.
+
+## Private target and protected references
+
+`runtimeTarget` and the independent coordinator-owned `ownedTarget` are
+owner-only files. Both have `schema: 1`, `worktree` (directory basename),
+`namespace`, `phase` (`development`, `test`, `demo` or `uat`),
+`lanAddress`, `worktreePort` and `origin`. The namespace derives from the
+worktree using the existing DNS-label normalization and ends with `-dev`.
+The origin is `https://<LAN IPv4>:<recorded port>`. Worktree ports are in
+59000–59999. Demo and UAT use 4173. The coordinator supplies the assigned
+worktree and approved LAN address and port from its own records. Preflight
+checks the resolved target against both the derivation and that record.
+
+The named `protectedReferences` object has `schema: 1`, `namespace`
+and `tls`. The Gitea-owned wrapper passes an owner-only local JSON file with
+`--protected-refs`, or uses `--sops-reference-envelope` with `--age-key-file`
+on DTU. In SOPS mode the age identity and encrypted JSON reference envelope
+are absolute owner-only regular files. Keep the envelope in protected Gitea,
+and keep the identity, verified Gitea input revision and any decrypted
+protected values in authorized DTU storage. The SOPS invocation captures
+the reference JSON in memory and reports only failing input names.
+
+Each TLS entry has exactly `kind`, a same-namespace object `name`, and the
+specified ordered `keys` array. Use the names from the worktree adoption
+inventory. The baseline examples show how the reference roles map to
+the existing secrets and trust bundle.
+
+| TLS input | Object kind | Baseline object name | Keys | Consumer |
+| --- | --- | --- | --- | --- |
+| `ingressTLS` | Secret | `ingress-tls` | `tls.crt`, `tls.key` | Ingress HTTPS termination |
+| `natsTLS` | Secret | `nats-tls` | `tls.crt`, `tls.key` | NATS listener |
+| `platformPostgresTLS` | Secret | `postgres-tls` | `tls.crt`, `tls.key` | Platform PostgreSQL server |
+| `standCA` | Secret | `stand-ca` | `ca.pem` | Release clients that trust the stand CA |
+| `trustBundle` | ConfigMap | `trust-bundle` | `ca.pem` | Release clients that need the combined public trust bundle |
+
+Charts consume the reference by Kubernetes Secret or ConfigMap key selector,
+or by a read-only volume restricted to the declared files. For new Secret
+objects TLS charts may use `kubernetes.io/tls` with the standard keys.
+Adoption preserves the existing object's type and ownership until its
+migration permits a change. The private adapter keeps CA signing keys,
+certificate material, service credentials, live broker account state and
+rollout recovery inputs within Gitea and DTU. Platform charts reference
+consumer-specific values provisioned by the applicable protected DTU phase.
+The token-file contract is separate from TLS. MiniMax provider credentials
+enter through the write-only model API.
+
+The DTU coordinator must stop before lease acquisition on invalid candidate
+evidence and before the dependent release on any missing protected input.
+For trust materialization, the later migration uses a private temporary
+directory on DTU, owner-only short-lived files, and suppressed or sanitized
+Helmfile output. Review evidence records logical input names only. Direct
+and encrypted reference modes validate the same shape. Raw credential
+fields are rejected by that schema. Presence of cluster objects and
+preservation of existing trust require DTU adoption evidence.
+
+[SOPS usage](https://getsops.io/docs/usage/)
+· [Kubernetes Secret and TLS key conventions](https://kubernetes.io/docs/concepts/configuration/secret/)
+
+The release owners extend the DTU adapter with named Secret references for
+their own charts. Use `secretName` and `secretKey` for scalar inputs and
+the object name and allowed key list for file projections. The handoff names
+are `platformDatabaseAdmin`, `serviceDatabaseRole`, `natsBootstrap`,
+`serviceNatsCredentials`, `executorRegistryNatsSigning`, `liteLLMGatewayAuth`,
+`liteLLMDatabase`, `keycloakBootstrap`, `gatewaySessionSigning` and
+`serviceEncryptionKeys`. Each migration slice owns its exact key names and
+read permissions. A shared chart receives only the named bindings it needs.
