@@ -1,0 +1,98 @@
+BEGIN;
+SELECT pg_advisory_xact_lock(7016052);
+SET LOCAL log_statement = 'none';
+SET LOCAL log_min_error_statement = 'panic';
+SET LOCAL log_min_messages = 'panic';
+SET LOCAL log_duration = off;
+SET LOCAL log_min_duration_statement = -1;
+SET LOCAL log_min_duration_sample = -1;
+SET LOCAL log_transaction_sample_rate = 0;
+SET LOCAL track_activities = off;
+SET LOCAL standard_conforming_strings = on;
+SET LOCAL search_path = pg_catalog;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_database AS d
+    CROSS JOIN LATERAL aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) AS a
+    WHERE d.datname = current_database() AND a.grantee = 0
+  ) OR EXISTS (
+    SELECT 1 FROM pg_namespace AS n
+    CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) AS a
+    WHERE n.nspname = 'public' AND a.grantee = 0
+  ) THEN
+    RAISE EXCEPTION 'Unexpected public grants on platform database';
+  END IF;
+END $$;
+
+{{ range $service, $names := .Files.Get "files/roles.yaml" | fromYaml }}
+{{ $role := index $names 0 -}}
+{{ $schema := index $names 1 -}}
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_namespace AS n LEFT JOIN pg_roles AS r ON r.oid = n.nspowner
+    WHERE (n.nspname = '{{ $schema }}' AND r.rolname IS DISTINCT FROM '{{ $role }}')
+       OR (r.rolname = '{{ $role }}' AND n.nspname <> '{{ $schema }}')
+       {{- if eq $service "api-gateway" }}
+       OR n.nspname = 'api_gateway_schema'
+       {{- end }}
+  ) OR EXISTS (
+    SELECT 1 FROM pg_class AS c
+    JOIN pg_roles AS r ON r.oid = c.relowner
+    JOIN pg_namespace AS n ON n.oid = c.relnamespace
+    WHERE r.rolname = '{{ $role }}' AND n.nspname <> '{{ $schema }}'
+  ) THEN
+    RAISE EXCEPTION 'Unexpected schema ownership for {{ $role }}';
+  END IF;
+END $$;
+
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ $role }}') AS role_missing \gset
+\if :role_missing
+  \set role_password `cat /run/service-roles/db-{{ $service }}`
+  SELECT format('CREATE ROLE {{ $role }} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD %L', :'role_password')
+  WHERE length(:'role_password') > 0 \gexec
+  \unset role_password
+  GRANT CONNECT ON DATABASE flowai TO {{ $role }};
+  ALTER ROLE {{ $role }} SET search_path = {{ $schema }};
+\endif
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles AS r
+    JOIN pg_db_role_setting AS s ON s.setrole = r.oid AND s.setdatabase = 0
+    WHERE r.rolname = '{{ $role }}' AND r.rolcanlogin AND NOT r.rolsuper
+      AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolinherit
+      AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND 'search_path={{ $schema }}' = ANY (s.setconfig)
+      AND has_database_privilege(r.oid, current_database(), 'CONNECT')
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_db_role_setting AS local_settings
+        WHERE local_settings.setrole = r.oid AND local_settings.setdatabase = (
+          SELECT oid FROM pg_database WHERE datname = current_database()
+        ) AND EXISTS (
+          SELECT FROM unnest(local_settings.setconfig) AS setting
+          WHERE setting LIKE 'search_path=%' AND setting <> 'search_path={{ $schema }}'
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION 'Unexpected role configuration for {{ $role }}';
+  END IF;
+END $$;
+
+CREATE SCHEMA IF NOT EXISTS {{ $schema }} AUTHORIZATION {{ $role }};
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_namespace AS n
+    CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) AS a
+    WHERE n.nspname = '{{ $schema }}' AND a.grantee = 0
+  ) THEN
+    RAISE EXCEPTION 'Unexpected public grants on {{ $schema }}';
+  END IF;
+END $$;
+{{ end }}
+
+COMMIT;

@@ -29,6 +29,19 @@ TLS_REFS = {
 }
 
 
+DATABASE_ROLE_KEYS = [
+    "db-api-gateway", "db-audit", "db-env-registry", "db-executor-registry",
+    "db-flow-registry", "db-journal", "db-model-registry", "db-source-controller",
+    "db-task-manager", "db-team-registry",
+]
+NATS_BOOTSTRAP_KEYS = {
+    "operator": ["operator.jwt"],
+    "resolverIdentities": ["application-account", "system-account"],
+    "credentials": ["user.creds"],
+    "resolverSeed": ["application.jwt", "system.jwt"],
+}
+
+
 class InvalidInput(Exception):
     pass
 
@@ -131,17 +144,58 @@ def runtime_target(runtime, expected):
     return runtime
 
 
-def protected_refs(protected, namespace):
-    shape(protected, "schema namespace tls", "protectedReferences")
+def file_reference(ref, kind, keys, label):
+    shape(ref, "kind name keys", label)
+    check(ref["kind"] == kind and matches(ref["name"], LABEL), label)
+    check(ref["keys"] == keys, label)
+
+
+def protected_fields(value, keys, label):
+    check(type(value) is dict, label)
+    for key in keys:
+        check(key in value, f"{label}.{key}")
+    check(value.keys() == set(keys), label)
+
+
+def shared_platform_refs(shared, storage_mode):
+    label = "protectedReferences.sharedPlatform"
+    protected_fields(shared, ["platformDatabaseAdmin", "serviceDatabaseRole", "natsBootstrap"], label)
+    admin_label = f"{label}.platformDatabaseAdmin"
+    admin = shared["platformDatabaseAdmin"]
+    shape(admin, "secretName secretKey", admin_label)
+    check(
+        matches(admin["secretName"], LABEL) and admin["secretKey"] == "postgres-password",
+        admin_label,
+    )
+    file_reference(
+        shared["serviceDatabaseRole"], "Secret", DATABASE_ROLE_KEYS,
+        f"{label}.serviceDatabaseRole",
+    )
+    broker = shared["natsBootstrap"]
+    broker_label = f"{label}.natsBootstrap"
+    required = ["operator", "resolverIdentities", "credentials"]
+    if storage_mode == "fresh":
+        required.append("resolverSeed")
+    protected_fields(broker, required, broker_label)
+    for name in required:
+        file_reference(broker[name], "Secret", NATS_BOOTSTRAP_KEYS[name], f"{broker_label}.{name}")
+
+
+def protected_refs(protected, namespace, storage_mode=None):
+    fields = "schema namespace tls"
+    if storage_mode is not None:
+        check(storage_mode in ("adopt", "fresh"), "storageMode")
+        fields += " sharedPlatform"
+    protected_fields(protected, fields.split(), "protectedReferences")
     check(type(protected["schema"]) is int and protected["schema"] == 1, "protectedReferences.schema")
     check(protected["namespace"] == namespace, "protectedReferences.namespace")
     shape(protected["tls"], " ".join(TLS_REFS), "protectedReferences.tls")
     for name, (kind, *keys) in TLS_REFS.items():
         label = f"protectedReferences.tls.{name}"
         ref = protected["tls"][name]
-        shape(ref, "kind name keys", label)
-        check(ref["kind"] == kind and matches(ref["name"], LABEL), label)
-        check(ref["keys"] == keys, label)
+        file_reference(ref, kind, keys, label)
+    if storage_mode is not None:
+        shared_platform_refs(protected["sharedPlatform"], storage_mode)
     return protected["tls"]
 
 
@@ -267,6 +321,7 @@ def main():
     references.add_argument("--protected-refs", type=Path)
     references.add_argument("--sops-reference-envelope", type=Path)
     parser.add_argument("--age-key-file", type=Path)
+    parser.add_argument("--shared-platform-storage", choices=("adopt", "fresh"))
     args = parser.parse_args()
     check(bool(args.sops_reference_envelope) == bool(args.age_key_file), "sopsAgeKeyFile")
     private_file(args.runtime_target, "runtimeTarget")
@@ -284,7 +339,7 @@ def main():
         references = read_json(args.protected_refs, "protectedReferences")
     else:
         references = decrypt_reference_envelope(args.sops_reference_envelope, args.age_key_file)
-    protected_refs(references, target["namespace"])
+    protected_refs(references, target["namespace"], args.shared_platform_storage)
     print("Candidate and DTU reference structure verified.")
 
 

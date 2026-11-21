@@ -1,0 +1,71 @@
+{{- $admin := .Values.platformDatabaseAdmin }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: database-roles
+  namespace: {{ .Release.Namespace }}
+data:
+  initialize.sql: |
+{{ .Files.Get "files/initialize.sql" | indent 4 }}
+  roles.sql: |
+{{ tpl (.Files.Get "files/roles.sql.gotmpl") . | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: database-roles
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  activeDeadlineSeconds: 240
+  backoffLimit: 2
+  template:
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: {{ .Values.image }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              export PGHOST=postgres PGDATABASE=flowai PGUSER=postgres
+              export PGSSLMODE=verify-full PGSSLROOTCERT=/run/flowai/stand-ca/ca.pem
+              export PGCONNECT_TIMEOUT=10
+              PGPASSWORD="$(cat /run/postgres-admin/password)"
+              export PGPASSWORD
+              if ! psql -X -w -q -v ON_ERROR_STOP=1 -f /etc/bootstrap/roles.sql >/dev/null 2>&1; then
+                echo 'Platform PostgreSQL role bootstrap failed' >&2
+                exit 1
+              fi
+          volumeMounts:
+            - {name: files, mountPath: /etc/bootstrap, readOnly: true}
+            - {name: admin, mountPath: /run/postgres-admin, readOnly: true}
+            - {name: roles, mountPath: /run/service-roles, readOnly: true}
+            - {name: stand-ca, mountPath: /run/flowai/stand-ca, readOnly: true}
+      volumes:
+        - name: files
+          configMap:
+            name: database-roles
+        - name: admin
+          secret:
+            secretName: {{ required "platformDatabaseAdmin.secretName" $admin.secretName | quote }}
+            items:
+              - key: {{ required "platformDatabaseAdmin.secretKey" $admin.secretKey | quote }}
+                path: password
+        - name: roles
+          secret:
+            secretName: {{ required "serviceDatabaseRole" .Values.serviceDatabaseRole.name | quote }}
+            items:
+              {{- range $service, $_ := .Files.Get "files/roles.yaml" | fromYaml }}
+              - key: db-{{ $service }}
+                path: db-{{ $service }}
+              {{- end }}
+        - name: stand-ca
+          secret:
+            secretName: {{ required "standCA" .Values.standCA.name | quote }}
+            items:
+              - key: ca.pem
+                path: ca.pem

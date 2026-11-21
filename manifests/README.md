@@ -107,3 +107,33 @@ are `platformDatabaseAdmin`, `serviceDatabaseRole`, `natsBootstrap`,
 `liteLLMDatabase`, `keycloakBootstrap`, `gatewaySessionSigning` and
 `serviceEncryptionKeys`. Each migration slice owns its exact key names and
 read permissions. A shared chart receives only the named bindings it needs.
+
+### Shared platform reference extension
+
+Use `--shared-platform-storage adopt` or `--shared-platform-storage fresh`
+when validating inputs for `.helmfile/platform.helmfile.yaml.gotmpl`. Both
+reference input modes accept the same version-1 object. This mode requires a
+`sharedPlatform` object alongside `tls`. The foundation-only path continues
+to use its original reference shape. The coordinator passes the validated
+reference object as `protectedReferences` with the resolved `namespace` and
+explicit `storageMode` in private Helmfile state values. These values carry
+only references. The selected namespace already owns the projected objects.
+
+| Input under `sharedPlatform` | Selector and files | Consumer |
+| --- | --- | --- |
+| `platformDatabaseAdmin` | `secretName` and `secretKey: postgres-password`. Baseline Secret is `test-deployment`. | PostgreSQL entry point and database bootstrap |
+| `serviceDatabaseRole` | Secret file reference. Use the ten `db-<service>` keys for the roles in the chart, alphabetically. Baseline Secret is `test-deployment`. | Database bootstrap |
+| `natsBootstrap.operator` | Secret file reference with `operator.jwt` | NATS server |
+| `natsBootstrap.resolverIdentities` | Secret file reference with `application-account` followed by `system-account`. Contents are the existing public account IDs. | NATS resolver guard |
+| `natsBootstrap.credentials` | Secret file reference with `user.creds`. Baseline Secret name is `nats-bootstrap`. | JetStream bootstrap |
+| `natsBootstrap.resolverSeed` | Fresh-only Secret file reference with `application.jwt` followed by `system.jwt`. Adopt mode rejects this field. | Empty NATS resolver initialization |
+
+Each file reference has `kind: Secret`, `name` and the ordered `keys`. TLS still
+comes from `platformPostgresTLS`, `natsTLS` and `standCA`. The DTU phase
+verifies the original credentials and TLS trust, materializes the selected
+protected objects before the dependent release, and issues short-lived NATS
+bootstrap credentials with permissions for the declared stream and consumer
+info/create subjects and `_INBOX.deployment.>`. During adoption, the
+legacy NATS ConfigMap must transfer with its inventoried owner or be
+reconciled under the approved recovery plan. The chart projects only its
+nonsecret `nats.conf` and takes `operator.jwt` from the named Secret.

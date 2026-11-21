@@ -1,0 +1,105 @@
+{{- $admin := .Values.platformDatabaseAdmin }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 999
+      {{- if eq .Values.storageMode "adopt" }}
+      initContainers:
+        - name: require-existing-data
+          image: {{ .Values.image }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              if [ "$(cat /var/lib/postgresql/data/pgdata/PG_VERSION 2>/dev/null)" != "16" ]; then
+                echo 'Expected existing PostgreSQL 16 data on postgres claim' >&2
+                exit 1
+              fi
+          volumeMounts:
+            - name: db
+              mountPath: /var/lib/postgresql/data
+              readOnly: true
+      {{- end }}
+      containers:
+        - name: postgres
+          image: {{ .Values.image }}
+          args: ["-c", "ssl=on", "-c", "ssl_cert_file=/run/tls/tls.crt", "-c", "ssl_key_file=/run/tls/tls.key"]
+          env:
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/postgres-admin/password
+            - name: POSTGRES_DB
+              value: flowai
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 2
+          volumeMounts:
+            - name: db
+              mountPath: /var/lib/postgresql/data
+            - name: tls
+              mountPath: /run/tls
+              readOnly: true
+            - name: admin
+              mountPath: /run/postgres-admin
+              readOnly: true
+            {{- if eq .Values.storageMode "fresh" }}
+            - name: bootstrap
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: db
+          persistentVolumeClaim:
+            claimName: postgres
+        - name: tls
+          secret:
+            secretName: {{ required "platformPostgresTLS" .Values.tls.name | quote }}
+            defaultMode: 0640
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: admin
+          secret:
+            secretName: {{ required "platformDatabaseAdmin.secretName" $admin.secretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "platformDatabaseAdmin.secretKey" $admin.secretKey | quote }}
+                path: password
+        {{- if eq .Values.storageMode "fresh" }}
+        - name: bootstrap
+          configMap:
+            name: database-roles
+            items:
+              - key: initialize.sql
+                path: initialize.sql
+        {{- end }}

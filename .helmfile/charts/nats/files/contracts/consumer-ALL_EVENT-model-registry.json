@@ -1,0 +1,21 @@
+{
+  "stream_name": "ALL_EVENT",
+  "config": {
+    "durable_name": "model-registry",
+    "filter_subjects": [
+      "executor-registry.event.executor_registered.sub",
+      "executor-registry.event.executor_removed.sub",
+      "executor.event.*.*.sub",
+      "task-manager.event.released.sub",
+      "task-manager.event.cancelled.sub",
+      "task-manager.event.archived.sub"
+    ],
+    "ack_policy": "explicit",
+    "ack_wait": 30000000000,
+    "max_deliver": -1,
+    "deliver_policy": "all",
+    "replay_policy": "instant",
+    "max_ack_pending": 256
+  },
+  "action": "create"
+}

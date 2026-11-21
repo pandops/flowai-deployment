@@ -1,0 +1,33 @@
+{{- $namespace := required "namespace" .Values.namespace }}
+{{- if or (not (regexMatch "^[a-z0-9][a-z0-9-]{0,58}-dev$" $namespace)) (hasPrefix "kube-" $namespace) }}
+{{- fail "namespace must identify an owned worktree" }}
+{{- end }}
+{{- $mode := required "storageMode" .Values.storageMode }}
+{{- if not (has $mode (list "adopt" "fresh")) }}{{ fail "storageMode must be adopt or fresh" }}{{ end }}
+{{- $refs := required "protectedReferences" .Values.protectedReferences }}
+{{- if ne $refs.namespace $namespace }}{{ fail "protectedReferences.namespace" }}{{ end }}
+{{- $shared := required "protectedReferences.sharedPlatform" $refs.sharedPlatform }}
+helmDefaults:
+  createNamespace: false
+  wait: true
+  timeout: 300
+releases:
+  - name: postgres
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/postgres
+    needs: []
+    values:
+      - storageMode: {{ $mode }}
+        tls: {{ $refs.tls.platformPostgresTLS | toJson }}
+        standCA: {{ $refs.tls.standCA | toJson }}
+        platformDatabaseAdmin: {{ $shared.platformDatabaseAdmin | toJson }}
+        serviceDatabaseRole: {{ $shared.serviceDatabaseRole | toJson }}
+  - name: nats
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/nats
+    needs: []
+    values:
+      - storageMode: {{ $mode }}
+        tls: {{ $refs.tls.natsTLS | toJson }}
+        standCA: {{ $refs.tls.standCA | toJson }}
+        natsBootstrap: {{ $shared.natsBootstrap | toJson }}
