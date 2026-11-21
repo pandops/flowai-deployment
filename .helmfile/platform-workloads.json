@@ -1,0 +1,33 @@
+{
+  "source-controller": {"mode": "config", "needs": ["nats", "postgres"], "origin": true, "fixtureHost": true},
+  "task-manager": {"mode": "config", "needs": ["nats", "postgres"]},
+  "journal": {"mode": "config", "needs": ["nats", "postgres"]},
+  "audit": {"mode": "config", "needs": ["nats", "postgres"]},
+  "team-registry": {"mode": "config", "needs": ["nats", "postgres"]},
+  "flow-registry": {"mode": "config", "needs": ["nats", "postgres"]},
+  "model-registry": {"mode": "config", "needs": ["nats", "postgres", "litellm-gateway"], "fixtureHost": true},
+  "env-registry": {"mode": "config", "needs": ["nats", "postgres"]},
+  "executor-registry": {
+    "mode": "config",
+    "needs": ["nats", "postgres"],
+    "extra": {
+      "mount": "/run/flowai/nats-keys",
+      "name": "executor-registry-nats-keys",
+      "volume": "nats-keys",
+      "keys": ["account-public-key", "account.jwt", "account-signing-key.nk", "operator-signing-key.nk", "system.creds"]
+    }
+  },
+  "admin-panel": {
+    "mode": "config",
+    "needs": ["nats"],
+    "origin": true,
+    "extra": {
+      "mount": "/run/flowai/secrets",
+      "name": "admin-panel-secrets",
+      "volume": "secrets",
+      "keys": ["cursor-key-1"]
+    }
+  },
+  "api-gateway": {"mode": "gateway", "needs": ["nats", "postgres", "keycloak", "journal"], "wait": false},
+  "web-ui": {"mode": "web", "needs": []}
+}

@@ -34,6 +34,12 @@ DATABASE_ROLE_KEYS = [
     "db-flow-registry", "db-journal", "db-model-registry", "db-source-controller",
     "db-task-manager", "db-team-registry",
 ]
+GATEWAY_ENV_KEYS = [
+    "API_GATEWAY_POSTGRES_URL",
+    "API_GATEWAY_SESSION_KEY_HEX",
+    "API_GATEWAY_JOURNAL_TOKEN",
+    "API_GATEWAY_WORKING_TOKEN_PRIVATE_KEY_BASE64",
+]
 NATS_BOOTSTRAP_KEYS = {
     "operator": ["operator.jwt"],
     "resolverIdentities": ["application-account", "system-account"],
@@ -223,19 +229,76 @@ def identity_routing_refs(bindings, storage_mode):
                        f"{label}.liteLLMProviderTrust.bundle")
 
 
-def adoption_inputs(inventory, namespace):
+def pinned_inventory_image(image, label):
+    pattern = rf"[a-z0-9][a-z0-9.:/-]*/[a-z0-9][a-z0-9._-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?@{DIGEST}"
+    check(matches(image, pattern) and ":latest@" not in image.lower()
+          and digest(image.rsplit("@", 1)[1]), label)
+
+
+def adoption_inputs(inventory, namespace, catalog):
     label = "adoptionInputs"
-    shape(inventory, "namespace liteLLMImage keycloakImage ingressNodePort", label)
+    shape(inventory, "namespace liteLLMImage keycloakImage ingressNodePort workloadImages", label)
     check(inventory["namespace"] == namespace, f"{label}.namespace")
     for field in ("liteLLMImage", "keycloakImage"):
-        image = inventory[field]
-        pattern = rf"[a-z0-9][a-z0-9.:/-]*/[a-z0-9][a-z0-9._-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?@{DIGEST}"
-        check(matches(image, pattern) and ":latest@" not in image.lower()
-              and digest(image.rsplit("@", 1)[1]),
-              f"{label}.{field}")
+        pinned_inventory_image(inventory[field], f"{label}.{field}")
+    protected_fields(inventory["workloadImages"], catalog, f"{label}.workloadImages")
+    for name, image in inventory["workloadImages"].items():
+        pinned_inventory_image(image, f"{label}.workloadImages.{name}")
     port = inventory["ingressNodePort"]
     check(type(port) is int and 1 <= port <= 65535, f"{label}.ingressNodePort")
     return inventory
+
+
+def workload_values(catalog, bindings, tls, target, images):
+    label = "protectedReferences.platformWorkloads"
+    shape(bindings, "fixtureHostAddress services", label)
+    host = bindings["fixtureHostAddress"]
+    if host is not None:
+        try:
+            address = ipaddress.IPv4Address(host) if type(host) is str else None
+        except ValueError:
+            address = None
+        check(address and str(address) == host and not (
+            address.is_loopback or address.is_unspecified or address.is_multicast
+        ), f"{label}.fixtureHostAddress")
+
+    stateful_inputs = [name for name, definition in catalog.items() if definition["mode"] != "web"]
+    protected_fields(bindings["services"], stateful_inputs, f"{label}.services")
+    releases = {}
+    for name, definition in catalog.items():
+        mode = definition["mode"]
+        values = {"mode": mode, "image": images[name]}
+        releases[name] = {"needs": definition["needs"], "values": values}
+        if "wait" in definition:
+            releases[name]["wait"] = definition["wait"]
+        if mode == "web":
+            continue
+        service_label = f"{label}.services.{name}"
+        service = bindings["services"][name]
+        extra = definition.get("extra")
+        shape(service, "config nats revision" + (" extra" if extra else ""), service_label)
+        keys = GATEWAY_ENV_KEYS if mode == "gateway" else ["config.yaml"]
+        config_name = f"{name}-env" if mode == "gateway" else f"{name}-config"
+        for field, expected_name, expected_keys in (
+            ("config", config_name, keys),
+            ("nats", f"{name}-nats", ["user.creds"]),
+            *([("extra", extra["name"], extra["keys"])] if extra else []),
+        ):
+            ref_label = f"{service_label}.{field}"
+            file_reference(service[field], "Secret", expected_keys, ref_label)
+            check(service[field]["name"] == expected_name, f"{ref_label}.name")
+        check(matches(service["revision"], LABEL), f"{service_label}.revision")
+        values.update(
+            config=service["config"], nats=service["nats"], revision=service["revision"],
+            standCA=tls["standCA"], trustBundle=tls["trustBundle"],
+        )
+        if definition.get("origin") or mode == "gateway":
+            values["origin"] = target["origin"]
+        if definition.get("fixtureHost") and host:
+            values["fixtureHost"] = host
+        if extra:
+            values["extra"] = {**service["extra"], "mount": extra["mount"], "volume": extra["volume"]}
+    return releases
 
 
 def protected_refs(protected, namespace, storage_mode=None, identity_routing=False):
@@ -245,7 +308,7 @@ def protected_refs(protected, namespace, storage_mode=None, identity_routing=Fal
         fields += " sharedPlatform"
     if identity_routing:
         check(storage_mode is not None, "storageMode")
-        fields += " identityRouting"
+        fields += " identityRouting platformWorkloads"
     protected_fields(protected, fields.split(), "protectedReferences")
     check(type(protected["schema"]) is int and protected["schema"] == 1, "protectedReferences.schema")
     check(protected["namespace"] == namespace, "protectedReferences.namespace")
@@ -392,12 +455,10 @@ def main():
     routing = args.identity_routing_values is not None
     adopting = routing and args.shared_platform_storage == "adopt"
     check(adopting == bool(args.adoption_inputs), "adoptionInputs")
-    if adopting:
-        check(not any((args.candidate, args.receipt_root, args.chart_revision,
-                       args.input_revision, args.e2e_revision)), "adoptionInputs or candidate")
-    else:
-        for name in ("candidate", "receipt_root", "chart_revision", "input_revision", "e2e_revision"):
-            check(getattr(args, name) is not None, name)
+    candidate_fields = ("candidate", "receipt_root", "chart_revision", "input_revision", "e2e_revision")
+    use_candidate = bool(args.candidate) or not adopting
+    for name in candidate_fields:
+        check((getattr(args, name) is not None) == use_candidate, name)
     check(bool(args.sops_reference_envelope) == bool(args.age_key_file), "sopsAgeKeyFile")
     private_file(args.runtime_target, "runtimeTarget")
     private_file(args.owned_target, "ownedTarget")
@@ -405,26 +466,29 @@ def main():
         read_json(args.runtime_target, "runtimeTarget"),
         read_json(args.owned_target, "ownedTarget"),
     )
+    catalog = read_json(ROOT / ".helmfile/platform-workloads.json", "platformWorkloads")
     if adopting:
         private_file(args.adoption_inputs, "adoptionInputs")
         inventory = adoption_inputs(
-            read_json(args.adoption_inputs, "adoptionInputs"), target["namespace"],
+            read_json(args.adoption_inputs, "adoptionInputs"), target["namespace"], catalog,
         )
-    else:
+    if use_candidate:
         images = candidate_pins(
             read_json(args.candidate, "candidate"), args.receipt_root,
             args.chart_revision, args.input_revision, args.e2e_revision,
         )
+    else:
+        images = {**inventory["workloadImages"], "litellm-gateway": inventory["liteLLMImage"]}
     if args.protected_refs:
         private_file(args.protected_refs, "protectedReferences")
         references = read_json(args.protected_refs, "protectedReferences")
     else:
         references = decrypt_reference_envelope(args.sops_reference_envelope, args.age_key_file)
-    protected_refs(references, target["namespace"], args.shared_platform_storage, routing)
+    tls = protected_refs(references, target["namespace"], args.shared_platform_storage, routing)
     if routing:
         release_inputs = {
             "target": target,
-            "liteLLMImage": inventory["liteLLMImage"] if adopting else images["litellm-gateway"],
+            "liteLLMImage": images["litellm-gateway"],
         }
         if adopting:
             release_inputs["keycloakAdoptionImage"] = inventory["keycloakImage"]
@@ -434,6 +498,9 @@ def main():
             "storageMode": args.shared_platform_storage,
             "protectedReferences": references,
             "identityRouting": release_inputs,
+            "platformWorkloads": workload_values(
+                catalog, references["platformWorkloads"], tls, target, images,
+            ),
         }
         try:
             with os.fdopen(os.open(args.identity_routing_values,

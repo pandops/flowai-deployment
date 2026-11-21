@@ -164,13 +164,93 @@ and public IP. The preflight checks all names and key lists. The DTU
 coordinator checks object existence, key presence and actual credentials
 before enabling the affected releases.
 
-In fresh mode the existing candidate flags are required and the gateway
-uses the exact receipt-validated LiteLLM image reference. In adopt mode
-supply `--adoption-inputs <absolute private inventory file>` in place of
-the candidate flags. This JSON has exactly `namespace`, `liteLLMImage`,
-`keycloakImage`, and `ingressNodePort`. The images are exact digest-pinned
-references to the existing compatible workloads, and the port is the
-existing Service's nodePort. The approved inventory and live readback
-establish their provenance. The private inventory format is for task
-2.21's first handoff. Task 2.22 wires the later GHCR switch without
-changing the storage and bootstrap mode.
+Fresh mode requires all candidate flags. The platform consumes the exact
+receipt-validated image references. Adopt mode always requires
+`--adoption-inputs <absolute private inventory file>` containing exactly
+`namespace`, `liteLLMImage`, `keycloakImage`, `ingressNodePort` and
+`workloadImages`. The latter is a map of all 12 workload names to their
+exact inventoried image references. All inventoried images require digests.
+For the current-image handoff in task 2.21, omit all candidate flags.
+For a later qualified image transition in task 2.22, supply all candidate
+flags alongside inventory. This replaces the application and LiteLLM
+images while keeping the adopted storage mode, Keycloak image and NodePort.
+The protected coordinator verifies running image IDs, owners and storage
+identity separately from input structure.
+
+### Platform workloads
+
+A full platform render also requires `protectedReferences.platformWorkloads`.
+Its exact fields are `fixtureHostAddress` (an approved IPv4 address or null)
+and `services`. The address supplies only the Source Controller and Model
+Registry aliases `fixture-provider.invalid` and `host.containers.internal`.
+Use the recorded host address when those services use host fixtures.
+`services` contains all ten platform service names and `api-gateway`.
+Web UI has no protected input.
+
+Each entry contains `config`, `nats` and an opaque, nonsecret `revision`.
+Use the original same-namespace `<service>-config` Secret with only
+`config.yaml` projected and `<service>-nats` with only `user.creds`
+projected. Gateway instead reads four keys individually from
+`api-gateway-env`, in the following order.
+
+1. `API_GATEWAY_POSTGRES_URL`
+2. `API_GATEWAY_SESSION_KEY_HEX`
+3. `API_GATEWAY_JOURNAL_TOKEN`
+4. `API_GATEWAY_WORKING_TOKEN_PRIVATE_KEY_BASE64`
+
+Two entries also require an `extra` reference. Admin Panel projects only
+`cursor-key-1` from `admin-panel-secrets`. Executor Registry projects
+`account-public-key`, `account.jwt`, `account-signing-key.nk`,
+`operator-signing-key.nk` and `system.creds`, in that order, from
+`executor-registry-nats-keys`. Both retain their original mount paths.
+Each reference uses the same `kind`, `name` and ordered `keys` shape as
+the TLS references.
+
+The DTU coordinator materializes or retains the protected objects before
+Helmfile reads the state. Change a service's revision after updating its
+configuration, NATS identity, extra inputs or projected trust. Change the
+affected revisions when shared trust changes. Use an opaque access-controlled
+rotation or configuration revision identifier. The chart projects the
+existing objects and schedules a Pod replacement when the revision changes.
+For an origin change, refresh the Source Controller and Admin Panel
+configuration for the new origin before their replacement Pods start.
+Gateway receives its origin-dependent environment directly from the
+validated target.
+
+### Required configuration at handoff
+
+Use the baseline `config.example.yaml` and the platform deployment's
+`serviceValues`, `fillConfig` and `apiGatewayEnv` functions to reconcile
+the existing private objects. Preserve every existing application key,
+credential and identity unless the approved operation rotates it. The
+workload chart owns the projections. The protected handoff owns the payloads
+and their comparison with the live inputs.
+
+All NATS clients use `tls://nats:4222`, the stand CA and their own projected
+`/run/flowai/nats/user.creds`. Keep each service-specific inbox, including
+Admin Panel's fixed inbox, and the 5s timeout. Existing service users and
+their permissions, account IDs, signing identities and revocations remain
+owned by the broker and Executor Registry. Database clients use
+`postgres:5432`, database `flowai`, `verify-full` and
+`/run/flowai/stand-ca/ca.pem`. The role matches the service's underscore
+name. Use the following schema and service-specific bindings.
+
+| Service | Schema | Protected payload and routing requirements |
+| --- | --- | --- |
+| Source Controller | `source_controller_schema` | Existing cursor and poll dispatcher signing key, poll allowlist, fixture trust and current public base URL. Ingress serves `/webhook/` and `/v1/sources/`. |
+| Task Manager | `task_manager_schema` | Existing claim signing key and cursor key. Keep intake and event durable consumers. |
+| Journal | `journal_schema` | Existing cursor key and shared Gateway bearer token. Its event durable feeds Gateway's WebSocket path. |
+| Audit | `audit_schema` | Existing cursor key and active ID. Keep the audit stream durable and tenant-scoped reads. |
+| Team Registry | `team_registry_schema` | Existing team state and outbox behavior. |
+| Flow Registry | `flow_registry_schema` | Existing cursor key, active ID and cursor TTL. |
+| Model Registry | `model_registry_schema` | Existing LiteLLM master key, task-key encryption keyring, cursor and task claim verification key. Keep `http://litellm-gateway-management:4000` for management and `http://litellm-gateway-data:4000/v1` for both type-specific entries. Resolve the latter through the cluster data Service for Kubernetes and the data-only forwarder alias on the private Docker network. Keep provider allowlists, trust and baseline usage refresh. |
+| Env Registry | `env_registry_schema` | Existing encryption keyring, cursor and task claim verification key. Keep the internal launch-parameter API and its authorization. |
+| Executor Registry | `executor_registry_schema` | Existing cursor and protected account plus system projections. Retain token issuance, revocation and both concrete Executor types. |
+| Admin Panel | None | Existing cursor file and fixed NATS identity. Use the current Keycloak issuer, its JWKS endpoint, audience `flowai-api-gateway-admin` and roles at `/realm_access/roles`. Only `/admin/v1/` is routed to Gateway. Other `/admin/` requests go to Admin Panel. |
+| API Gateway | `api_gateway` | TLS database URL with the `api_gateway` role, session key, Journal token and working-token signing key. Use `<origin>/idp/realms/flowai-e2e`, client `flowai-api-gateway-e2e`, callback `<origin>/auth/v1/callback` and team claims at `/teams` in the ID token. Journal stays at `http://journal:8080`. |
+| Web UI | None | Pinned service image. Ingress serves its assets and routes API requests to Gateway on the same origin. |
+
+Readiness of the application requires Gateway OIDC discovery through the
+actual host relay, Keycloak client readback and Gateway `/healthz`. A Helm
+result alone does not establish these conditions. Apply the runner's
+ownership, locking, recovery and cleanup policies before enabling E2E.

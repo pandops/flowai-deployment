@@ -1,0 +1,165 @@
+{{- $name := .Release.Name }}
+{{- $mode := .Values.mode }}
+{{- if not (has $mode (list "config" "gateway" "web")) }}
+{{- fail "platform workload mode must be config, gateway or web" }}
+{{- end }}
+{{- $web := eq $mode "web" }}
+{{- $gateway := eq $mode "gateway" }}
+{{- $config := eq $mode "config" }}
+{{- $image := required "platform workload image is required" .Values.image }}
+{{- if or (not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $image)) (contains ":latest@" (lower $image)) }}
+{{- fail "platform workload image must be pinned by digest without latest" }}
+{{- end }}
+{{- $issuer := printf "%s/idp/realms/flowai-e2e" .Values.origin }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  selector: {app: {{ $name }}}
+  ports: [{port: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+spec:
+  replicas: 1
+  {{- if not $web }}
+  strategy: {type: Recreate}
+  {{- end }}
+  selector:
+    matchLabels: {app: {{ $name }}}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        {{- if $config }}
+        app.kubernetes.io/name: {{ $name }}
+        {{- end }}
+      {{- if not $web }}
+      annotations:
+        flowai.io/env: {{ required "platform workload input revision is required" .Values.revision | quote }}
+        {{- with .Values.origin }}
+        flowai.io/origin: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.fixtureHost }}
+      hostAliases:
+        - ip: {{ . | quote }}
+          hostnames: [fixture-provider.invalid, host.containers.internal]
+      {{- end }}
+      {{- if not $web }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ $image | quote }}
+          {{- if not $web }}
+          ports: [{containerPort: 8080}]
+          {{- end }}
+          {{- if $config }}
+          args: [--config, /etc/flowai/config.yaml]
+          env:
+            - {name: SSL_CERT_FILE, value: /run/flowai/trust/ca.pem}
+          {{- else if $gateway }}
+          {{- $public := dict
+              "API_GATEWAY_BIND_PORT" "8080"
+              "API_GATEWAY_OIDC_ISSUER" $issuer
+              "API_GATEWAY_OIDC_CLIENT_ID" "flowai-api-gateway-e2e"
+              "API_GATEWAY_OIDC_REDIRECT_URI" (printf "%s/auth/v1/callback" .Values.origin)
+              "API_GATEWAY_OIDC_TEAM_CLAIM_ADAPTER" "string_array"
+              "API_GATEWAY_OIDC_TEAM_CLAIM_POINTER" "/teams"
+              "API_GATEWAY_OIDC_TEAM_CLAIM_SOURCE" "id_token"
+              "API_GATEWAY_WEB_UI_URL" (printf "%s/" .Values.origin)
+              "API_GATEWAY_NATS_URL" "tls://nats:4222"
+              "API_GATEWAY_NATS_CA_FILE" "/run/flowai/stand-ca/ca.pem"
+              "API_GATEWAY_NATS_CREDENTIALS_FILE" "/run/flowai/nats/user.creds"
+              "API_GATEWAY_NATS_INBOX_PREFIX" "_INBOX.api-gateway"
+              "API_GATEWAY_RPC_TIMEOUT" "5s"
+              "API_GATEWAY_JOURNAL_URL" "http://journal:8080"
+              "API_GATEWAY_ADMIN_ISSUER" $issuer
+              "API_GATEWAY_ADMIN_AUDIENCE" "flowai-api-gateway-admin"
+              "API_GATEWAY_ADMIN_JWKS_URL" (printf "%s/protocol/openid-connect/certs" $issuer)
+              "API_GATEWAY_ADMIN_ROLE_CLAIM_POINTER" "/realm_access/roles"
+              "API_GATEWAY_WORKING_TOKEN_KEY_ID" "dtu-working"
+              "API_GATEWAY_WORKING_TOKEN_ISSUER" .Values.origin
+              "API_GATEWAY_WORKING_TOKEN_AUDIENCE" "flowai-state-registry"
+              "API_GATEWAY_WORKING_TOKEN_TTL" "5m"
+              "SSL_CERT_FILE" "/run/flowai/trust/ca.pem" }}
+          env:
+            {{- range $key, $value := $public }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range .Values.config.keys }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.config.name | quote }}
+                  key: {{ . }}
+            {{- end }}
+          {{- end }}
+          readinessProbe:
+            {{- if $web }}
+            tcpSocket: {port: 8080}
+            {{- else if $gateway }}
+            httpGet: {path: /healthz, port: 8080}
+            {{- else }}
+            httpGet: {path: /v1/readyz, port: 8080}
+            {{- end }}
+            periodSeconds: 2
+          {{- if $config }}
+          livenessProbe:
+            httpGet: {path: /v1/livez, port: 8080}
+            periodSeconds: 10
+            failureThreshold: 6
+          {{- end }}
+          {{- if not $web }}
+          volumeMounts:
+            {{- if $config }}
+            - {name: config, mountPath: /etc/flowai, readOnly: true}
+            {{- end }}
+            - {name: nats, mountPath: /run/flowai/nats, readOnly: true}
+            - {name: stand-ca, mountPath: /run/flowai/stand-ca, readOnly: true}
+            - {name: trust, mountPath: /run/flowai/trust, readOnly: true}
+            {{- with .Values.extra }}
+            - {name: {{ .volume }}, mountPath: {{ .mount | quote }}, readOnly: true}
+            {{- end }}
+      volumes:
+        {{- if $config }}
+        - name: config
+          secret:
+            secretName: {{ .Values.config.name | quote }}
+            defaultMode: 0440
+            items: [{key: config.yaml, path: config.yaml}]
+        {{- end }}
+        - name: nats
+          secret:
+            secretName: {{ .Values.nats.name | quote }}
+            defaultMode: 0440
+            items: [{key: user.creds, path: user.creds}]
+        - name: stand-ca
+          secret:
+            secretName: {{ .Values.standCA.name | quote }}
+            items: [{key: ca.pem, path: ca.pem}]
+        - name: trust
+          configMap:
+            name: {{ .Values.trustBundle.name | quote }}
+            items: [{key: ca.pem, path: ca.pem}]
+        {{- with .Values.extra }}
+        - name: {{ .volume }}
+          secret:
+            secretName: {{ .name | quote }}
+            defaultMode: 0440
+            items:
+              {{- range .keys }}
+              - {key: {{ . | quote }}, path: {{ . | quote }}}
+              {{- end }}
+        {{- end }}
+        {{- end }}

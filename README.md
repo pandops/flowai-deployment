@@ -9,20 +9,14 @@ state. Production operation is outside the approved change.
 
 ## Static qualification
 
-Run `python3 -B scripts/qualify-static.py` on Linux with Python 3.9 or later,
-Helm 4.1.4 and Helmfile 1.4.4. It uses a generated reference-only fixture,
-private tmpfs and an empty kubeconfig. Helmfile lints the local chart and
-renders one ConfigMap to verify the namespace, origin and TLS reference
-shape. There are zero chart dependencies. The chart version is the initial
-version of this owned static chart. The static state uses the
-`foundation-preview` kube context and rejects every namespace except the
-synthetic fixture namespace. Use only lint and template with this state.
-
-The default workflow is dispatch-only with `contents: read`. Dispatch it
-against a revision containing the chart and pass its full SHA as
-`expected_source_sha`. The seed checks for the qualification script before
-downloading any tool. The workflow renders with synthetic inputs and does
-not use Gitea, registry or DTU access.
+The dispatch-only workflow runs static qualification inline with
+`contents: read`, Helm 4.1.4 and Helmfile 1.4.4. It verifies the checkout
+against `expected_source_sha` before installing tools. It uses generated
+reference-only inputs, private tmpfs and an empty kubeconfig. It lints and
+renders the foundation and platform, checks the exact release inventory and
+verifies image pin propagation. Run the same workflow step locally with
+the pinned tools on Linux. The check requires no Gitea, registry or DTU
+access.
 
 [Helmfile 1.4.4 state and CLI reference](https://github.com/helmfile/helmfile/blob/v1.4.4/docs/index.md)
 · [Helm lint](https://helm.sh/docs/helm/helm_lint/)
@@ -63,7 +57,7 @@ chart has neither dependencies nor a generated lock.
 | 2.5 LiteLLM | [Owned `litellm-gateway` 0.2.0](.helmfile/charts/litellm-gateway/Chart.yaml), derived from the baseline chart | Keep its release, database claim and isolated listeners. |
 | 2.6 Keycloak | [Owned `keycloak` and `keycloak-client` 0.1.0](.helmfile/charts/keycloak/Chart.yaml) | Use the approved current image and claim for first adoption. Fresh uses official Keycloak 26.6.3. Reconcile the Gateway client through ingress. |
 | 2.7 ingress | [Owned `ingress` 0.1.0](.helmfile/charts/ingress/Chart.yaml) | Preserve `ingress` and `ingress-host`, certificate identity, address and worktree port. |
-| 2.8–2.19 platform workloads | Baseline `platform.mjs` and `test-deployment.mjs` | Each release owns its workload and receives only its own protected bindings. Existing service, broker, network and database boundaries apply. |
+| 2.8–2.19 platform workloads | [Owned `platform-workload` 0.1.0](.helmfile/charts/platform-workload/Chart.yaml), dependency-free | Each release owns its workload and receives only its own protected bindings. Existing service, broker, network and database boundaries apply. |
 | 2.20 MockServer | Gitea `fixtures/mockserver/.helmfile/` | Pin its upstream digest in Gitea and use the approved shared fixture namespace. |
 | 3.3 K8s Executor | Existing owned `executor/k8s-openhands/deploy/k8s/chart` 0.1.0, no chart dependencies | On-demand. Accept `namespace`, `releaseName`, `candidateManifest` and private `tokenFile`. Scope team, tag and release lifecycle to their owner. |
 
@@ -146,13 +140,16 @@ record original ownership, backups and rollback inputs before adoption.
 The platform state adds these releases when given the reference-only
 output of the identity-routing preflight. The charts have no dependencies
 to download. The release graph keeps `litellm-gateway` and `keycloak` as
-independent roots. Ingress depends on `keycloak`. The `keycloak-client`
-release depends on `ingress` and waits for its post-install or upgrade
-job. The existing API Gateway, Source Controller, Admin Panel and Web UI
-Services must already be present for ingress to resolve their names.
-Their chart slices add the remaining edges when those releases join the
-state. In particular, API Gateway can depend on `keycloak` and must consume
-the same origin before traffic is handed back.
+independent roots. Ingress depends on Keycloak and the four releases that
+own its upstream Services. The Keycloak client hook depends on ingress.
+
+The Gateway opens its HTTP listener after OIDC discovery at the public
+issuer. Its Helm release creates its Service and Deployment without a
+Helm readiness wait, allowing ingress to resolve the Service and start.
+The host coordinator enables the existing relay on the approved port after
+the ingress NodePort is available and explicitly waits for Gateway
+`/healthz` before marking the deployment ready. The Keycloak client hook
+reconciles the client over cluster ingress with the external issuer identity.
 
 - LiteLLM keeps its original Deployment, StatefulSet and
   `data-litellm-gateway-postgresql-0` claim identity. It uses the same
@@ -207,6 +204,25 @@ images, routing, sessions and trust before recording continuity.
 [Keycloak 26.6.3 database configuration](https://github.com/keycloak/keycloak/blob/26.6.3/quarkus/config-api/src/main/java/org/keycloak/config/database/Database.java)
 · [Keycloak realm import and export](https://www.keycloak.org/server/importExport)
 · [Keycloak 26.6.3 client update implementation](https://github.com/keycloak/keycloak/blob/26.6.3/services/src/main/java/org/keycloak/services/resources/admin/ClientResource.java)
+
+## Platform workload releases
+
+[The workload catalog](.helmfile/platform-workloads.json) defines the ten
+platform services, API Gateway and Web UI. Every release owns its original
+Deployment and ClusterIP Service. The chart keeps the `app` selectors, port
+8080, probe behavior and production image entry points. Eleven releases
+project their own NATS identity with the stand CA and trust bundle. The
+nine data-owning services and Gateway depend on the shared PostgreSQL
+release. Admin Panel has no database. Web UI keeps its TCP readiness probe
+and reaches the Gateway through the browser's same-origin routes.
+
+Source Controller and Model Registry can map the baseline host fixture
+aliases to the coordinator's verified address. The release graph does not
+publish the fixture. Model Registry owns the management access to LiteLLM
+and returns the data-plane URL by Executor type. Both baseline URLs use
+`http://litellm-gateway-data:4000/v1`. Kubernetes resolves the Service and
+the private Docker task network resolves the data-only forwarder alias.
+The host coordinator verifies those separate transports before testing.
 
 ## Candidate and protected inputs
 
