@@ -31,3 +31,55 @@ releases:
         tls: {{ $refs.tls.natsTLS | toJson }}
         standCA: {{ $refs.tls.standCA | toJson }}
         natsBootstrap: {{ $shared.natsBootstrap | toJson }}
+{{- with (getOrNil "identityRouting" .Values) }}
+{{- $routing := . }}
+{{- $target := required "identityRouting.target" (getOrNil "target" $routing) }}
+{{- if ne $target.namespace $namespace }}{{ fail "identityRouting.target.namespace" }}{{ end }}
+{{- if not (regexMatch "^[0-9]{1,3}([.][0-9]{1,3}){3}$" $target.lanAddress) }}{{ fail "identityRouting.target.lanAddress" }}{{ end }}
+{{- $port := int $target.worktreePort }}
+{{- if or (lt $port 59000) (gt $port 59999) }}{{ fail "identityRouting.target.worktreePort" }}{{ end }}
+{{- if not (has $target.phase (list "development" "test" "demo" "uat")) }}{{ fail "identityRouting.target.phase" }}{{ end }}
+{{- if has $target.phase (list "demo" "uat") }}{{ $port = 4173 }}{{ end }}
+{{- if ne $target.origin (printf "https://%s:%d" $target.lanAddress $port) }}{{ fail "identityRouting.target.origin" }}{{ end }}
+{{- $bindings := required "protectedReferences.identityRouting" $refs.identityRouting }}
+  - name: litellm-gateway
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/litellm-gateway
+    needs: []
+    timeout: 900
+    values:
+      - storageMode: {{ $mode }}
+        image: {{ required "identityRouting.liteLLMImage" $routing.liteLLMImage | quote }}
+        auth:
+          existingSecret: {{ required "liteLLMGatewayAuth.name" $bindings.liteLLMGatewayAuth.name | quote }}
+          databaseSecret: {{ required "liteLLMDatabase.name" $bindings.liteLLMDatabase.name | quote }}
+        providerTrust: {{ getOrNil "liteLLMProviderTrust" $bindings | default dict | toJson }}
+        budgetReset: {minIntervalSeconds: 20, maxIntervalSeconds: 25}
+  - name: keycloak
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/keycloak
+    needs: []
+    timeout: 600
+    values:
+      - storageMode: {{ $mode }}
+        origin: {{ $target.origin | quote }}
+        adoptionImage: {{ getOrNil "keycloakAdoptionImage" $routing | default "" | quote }}
+        bootstrap: {{ getOrNil "keycloakBootstrap" $bindings | default dict | toJson }}
+  - name: ingress
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/ingress
+    needs: [{{ printf "%s/keycloak" $namespace | quote }}]
+    values:
+      - lanAddress: {{ $target.lanAddress | quote }}
+        port: {{ $port }}
+        nodePort: {{ getOrNil "ingressNodePort" $routing | default 0 }}
+        tls: {{ $refs.tls.ingressTLS | toJson }}
+  - name: keycloak-client
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/keycloak-client
+    needs: [{{ printf "%s/ingress" $namespace | quote }}]
+    values:
+      - origin: {{ $target.origin | quote }}
+        admin: {{ $bindings.keycloakReconcile | toJson }}
+        standCA: {{ $refs.tls.standCA | toJson }}
+{{- end }}

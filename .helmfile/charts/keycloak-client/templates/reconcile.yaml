@@ -1,0 +1,53 @@
+{{- $name := "keycloak-client-reconcile" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+data:
+  reconcile.py: |
+{{ .Files.Get "files/reconcile.py" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade,post-rollback
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: reconcile
+          image: docker.io/library/python:3.13-alpine@sha256:2dd78ad5cf13a0b68f5134dc49aa9950203a8cf4b7463431b9f3b398287c5059
+          command: [python, -I, /job/reconcile.py]
+          args: [{{ required "client origin is required" .Values.origin | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: script, mountPath: /job, readOnly: true}
+            - {name: admin, mountPath: /admin, readOnly: true}
+            - {name: trust, mountPath: /trust, readOnly: true}
+      volumes:
+        - name: script
+          configMap: {name: {{ $name }}}
+        - name: admin
+          secret:
+            secretName: {{ required "Keycloak reconcile Secret reference is required" .Values.admin.name | quote }}
+            items: [{key: username, path: username}, {key: password, path: password}]
+        - name: trust
+          secret:
+            secretName: {{ required "stand CA Secret reference is required" .Values.standCA.name | quote }}
+            items: [{key: ca.pem, path: ca.pem}]

@@ -137,3 +137,40 @@ info/create subjects and `_INBOX.deployment.>`. During adoption, the
 legacy NATS ConfigMap must transfer with its inventoried owner or be
 reconciled under the approved recovery plan. The chart projects only its
 nonsecret `nats.conf` and takes `operator.jwt` from the named Secret.
+
+### Identity, LiteLLM and ingress reference extension
+
+Supply `--identity-routing-values <new private file>` together with
+`--shared-platform-storage fresh|adopt`. The preflight emits the platform
+Helmfile state values to that new file with mode 0600. Keep the input
+and output files in private DTU storage and discard temporary copies
+after the operation. Do not hand-edit the derived state values.
+
+Under `protectedReferences.identityRouting`, supply these exact selectors.
+All projections are same-namespace and contain only the listed files.
+
+| Input | Kind and keys | Use |
+| --- | --- | --- |
+| `liteLLMGatewayAuth` | Secret `litellm-gateway-auth` with `master-key`, `credential-encryption-key`, `database-url` | LiteLLM reads all three as files. |
+| `liteLLMDatabase` | Secret with `postgres-password` | Use the same database credentials as the gateway URL. The baseline stores this key in `litellm-gateway-auth`. |
+| `liteLLMProviderTrust` | Optional `hostAddress` and `bundle` containing a ConfigMap reference with `ca.pem` | For the owned provider fixture, reproduce the approved aliases and bundle with public roots and fixture trust. The baseline called the bundle `pricing-ca`. |
+| `keycloakReconcile` | Secret with `username`, `password` | Existing authorized master-realm account for lookup and configuration of the single Gateway client. |
+| `keycloakBootstrap.admin` | Fresh-only Secret with `username`, `password` | Initial master-realm administrator. |
+| `keycloakBootstrap.realm` | Fresh-only Secret with `flowai-e2e-realm.json` | Private startup import including the required roles, groups, clients and claim mappers. Use protected user credentials. |
+
+Ingress consumes the existing `tls.ingressTLS` projection. The client
+job uses `tls.standCA` for verification of the same ingress certificate
+and public IP. The preflight checks all names and key lists. The DTU
+coordinator checks object existence, key presence and actual credentials
+before enabling the affected releases.
+
+In fresh mode the existing candidate flags are required and the gateway
+uses the exact receipt-validated LiteLLM image reference. In adopt mode
+supply `--adoption-inputs <absolute private inventory file>` in place of
+the candidate flags. This JSON has exactly `namespace`, `liteLLMImage`,
+`keycloakImage`, and `ingressNodePort`. The images are exact digest-pinned
+references to the existing compatible workloads, and the port is the
+existing Service's nodePort. The approved inventory and live readback
+establish their provenance. The private inventory format is for task
+2.21's first handoff. Task 2.22 wires the later GHCR switch without
+changing the storage and bootstrap mode.

@@ -1,0 +1,66 @@
+storageMode: ""
+image: "" # Exact preflight-resolved image reference.
+providerTrust: {}
+auth:
+  existingSecret: litellm-gateway-auth
+  databaseSecret: litellm-gateway-auth
+
+service:
+  # Port of both internal Services (management and data plane).
+  port: 4000
+
+# Digest-pinned reverse proxies in front of LiteLLM, one per role, each with
+# its own path allowlist (files/proxy/*.conf.template). LiteLLM itself listens
+# only on the Pod's loopback interface.
+proxy:
+  image: docker.io/nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:26b0bf6fbf07297983cb341998d79c831508787de26627dd2a112321b9c3a4af
+  managementPort: 8080
+  dataPort: 8081
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+networkPolicy:
+  # Default-deny ingress for every Pod of the release. The two lists name the
+  # clients admitted to each role as NetworkPolicyPeer entries (podSelector,
+  # namespaceSelector). Empty lists admit nobody.
+  management:
+    # Only the model-registry workload of the release's namespace calls the
+    # management API (design: model-registry is the sole LiteLLM manager).
+    from:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: model-registry
+  data:
+    from:
+      - podSelector:
+          matchLabels:
+            flowai.io/litellm-data: client
+
+postgresql:
+  image: docker.io/library/postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+  database: litellm
+  username: litellm
+  storage:
+    size: 1Gi
+    storageClassName: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
+# Interval of LiteLLM's budget reset job, which clears key and team spend
+# once their budget_reset_at has passed. The job runs every min..max seconds
+# (LiteLLM's default when unset: 597..605). Flow budgets reset on calendar
+# boundaries in UTC; a shorter interval only makes a due reset happen sooner.
+budgetReset:
+  minIntervalSeconds: null
+  maxIntervalSeconds: null
+
+resources:
+  requests: { cpu: 250m, memory: 768Mi }
+  limits: { memory: 2Gi }
+
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

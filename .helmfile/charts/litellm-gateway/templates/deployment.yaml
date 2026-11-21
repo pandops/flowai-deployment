@@ -1,0 +1,149 @@
+{{- include "litellm-gateway.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "litellm-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels:
+      {{- include "litellm-gateway.selector" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      annotations:
+        checksum/proxy: {{ include (print $.Template.BasePath "/proxy-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "litellm-gateway.selector" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      {{- with .Values.providerTrust.hostAddress }}
+      hostAliases:
+        - ip: {{ . | quote }}
+          hostnames: [fixture-provider.invalid, host.containers.internal]
+      {{- end }}
+      containers:
+        - name: litellm
+          image: {{ .Values.image | quote }}
+          imagePullPolicy: IfNotPresent
+          # Reachable only through the proxies inside the Pod.
+          args: ["--host", "127.0.0.1"]
+          # Keep serving until the Pod has left the Service endpoints, so a
+          # rollout or restart does not drop requests in flight.
+          lifecycle:
+            preStop: {exec: {command: [sleep, "10"]}}
+          env:
+            - name: LITELLM_MASTER_KEY_FILE
+              value: /run/secrets/litellm/master-key
+            - name: LITELLM_SALT_KEY_FILE
+              value: /run/secrets/litellm/credential-encryption-key
+            - name: DATABASE_URL_FILE
+              value: /run/secrets/litellm/database-url
+            {{- if .Values.providerTrust }}
+            - {name: SSL_CERT_FILE, value: /run/pricing-ca/ca.pem}
+            - {name: REQUESTS_CA_BUNDLE, value: /run/pricing-ca/ca.pem}
+            {{- end }}
+            {{- with .Values.budgetReset.minIntervalSeconds }}
+            - {name: PROXY_BUDGET_RESCHEDULER_MIN_TIME, value: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.budgetReset.maxIntervalSeconds }}
+            - {name: PROXY_BUDGET_RESCHEDULER_MAX_TIME, value: {{ . | quote }}}
+            {{- end }}
+          volumeMounts:
+            - {name: auth, mountPath: /run/secrets/litellm, readOnly: true}
+            {{- if .Values.providerTrust }}
+            - {name: provider-trust, mountPath: /run/pricing-ca, readOnly: true}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          # Probe paths qualified for LiteLLM v1.104.0-rc.2, called on the
+          # loopback listener. Readiness needs a usable database; liveness does
+          # not, so a recoverable database outage does not restart the gateway.
+          startupProbe:
+            exec: {command: [python, -c, {{ include "litellm-gateway.probe" "/health/liveness" | quote }}]}
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 60
+          readinessProbe:
+            exec: {command: [python, -c, {{ include "litellm-gateway.probe" "/health/readiness" | quote }}]}
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 2
+          livenessProbe:
+            exec: {command: [python, -c, {{ include "litellm-gateway.probe" "/health/liveness" | quote }}]}
+            periodSeconds: 10
+            timeoutSeconds: 4
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        {{- range $role := list "management" "data" }}
+        - name: {{ $role }}-proxy
+          image: {{ $.Values.proxy.image }}
+          ports:
+            - {name: {{ $role }}, containerPort: {{ index $.Values.proxy (printf "%sPort" $role) }}}
+          lifecycle:
+            preStop: {exec: {command: [sleep, "10"]}}
+          env:
+            - {name: PROXY_PORT, value: {{ index $.Values.proxy (printf "%sPort" $role) | quote }}}
+            - {name: LITELLM_UPSTREAM, value: "127.0.0.1:4000"}
+            - {name: NGINX_ENTRYPOINT_LOCAL_RESOLVERS, value: "1"}
+          volumeMounts:
+            - {name: proxy-templates, mountPath: /etc/nginx/templates/{{ $role }}.conf.template, subPath: {{ $role }}.conf.template, readOnly: true}
+            - {name: {{ $role }}-proxy-conf, mountPath: /etc/nginx/conf.d}
+            - {name: {{ $role }}-proxy-tmp, mountPath: /tmp}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            {{- toYaml $.Values.proxy.resources | nindent 12 }}
+        {{- end }}
+      volumes:
+        - name: proxy-templates
+          configMap:
+            name: {{ .Release.Name }}-proxy
+        {{- range $role := list "management" "data" }}
+        - {name: {{ $role }}-proxy-conf, emptyDir: {}}
+        - {name: {{ $role }}-proxy-tmp, emptyDir: {}}
+        {{- end }}
+        {{- with .Values.providerTrust }}
+        - name: provider-trust
+          configMap:
+            name: {{ .bundle.name | quote }}
+            items: [{key: ca.pem, path: ca.pem}]
+        {{- end }}
+        - name: auth
+          secret:
+            secretName: {{ required "LiteLLM gateway auth Secret reference is required" .Values.auth.existingSecret | quote }}
+            items:
+              - {key: master-key, path: master-key}
+              - {key: credential-encryption-key, path: credential-encryption-key}
+              - {key: database-url, path: database-url}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,39 @@
+# LiteLLM OpenAI-compatible data-plane route allowlist, shared by the Helm and
+# Docker Compose deployments. Task runtimes call only chat completions with
+# their per-task virtual key; every other path, including the management API
+# and the upstream Admin UI, is answered with 404 before reaching LiteLLM.
+#
+# Rendered by the nginx image's envsubst step: ${PROXY_PORT},
+# ${LITELLM_UPSTREAM} and ${NGINX_LOCAL_RESOLVERS} come from the container
+# environment.
+server {
+    listen ${PROXY_PORT};
+    server_tokens off;
+    client_max_body_size 32m;
+
+    # Blocked requests get a plain body that names neither LiteLLM nor the
+    # proxy. Upstream errors pass through unchanged (no proxy_intercept_errors).
+    error_page 404 @not_found;
+    location @not_found { default_type text/plain; return 404 "not found\n"; }
+
+    # Resolve the upstream at request time (re-checked every 10 s): a
+    # restarted LiteLLM container can come back with a new address.
+    # NGINX_LOCAL_RESOLVERS is filled in by the image entrypoint from
+    # /etc/resolv.conf when NGINX_ENTRYPOINT_LOCAL_RESOLVERS is set.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+    set $litellm_upstream http://${LITELLM_UPSTREAM};
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Connection "";
+    # Model calls can be long and streamed.
+    proxy_buffering off;
+    proxy_read_timeout 900s;
+    proxy_send_timeout 900s;
+
+    location = /v1/chat/completions { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location = /chat/completions { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location = /v1/models { if ($request_method != GET) { return 404; } proxy_pass $litellm_upstream; }
+
+    location / { return 404; }
+}

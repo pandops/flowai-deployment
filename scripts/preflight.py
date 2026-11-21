@@ -181,11 +181,71 @@ def shared_platform_refs(shared, storage_mode):
         file_reference(broker[name], "Secret", NATS_BOOTSTRAP_KEYS[name], f"{broker_label}.{name}")
 
 
-def protected_refs(protected, namespace, storage_mode=None):
+def identity_routing_refs(bindings, storage_mode):
+    label = "protectedReferences.identityRouting"
+    mandatory = ["liteLLMGatewayAuth", "liteLLMDatabase", "keycloakReconcile"]
+    if storage_mode == "fresh":
+        mandatory.append("keycloakBootstrap")
+    fields = mandatory.copy()
+    if isinstance(bindings, dict) and "liteLLMProviderTrust" in bindings:
+        fields.append("liteLLMProviderTrust")
+    protected_fields(bindings, fields, label)
+    file_reference(
+        bindings["liteLLMGatewayAuth"], "Secret",
+        ["master-key", "credential-encryption-key", "database-url"],
+        f"{label}.liteLLMGatewayAuth",
+    )
+    check(bindings["liteLLMGatewayAuth"]["name"] == "litellm-gateway-auth",
+          f"{label}.liteLLMGatewayAuth.name")
+    file_reference(bindings["liteLLMDatabase"], "Secret", ["postgres-password"],
+                   f"{label}.liteLLMDatabase")
+    file_reference(bindings["keycloakReconcile"], "Secret", ["username", "password"],
+                   f"{label}.keycloakReconcile")
+    if storage_mode == "fresh":
+        bootstrap = bindings["keycloakBootstrap"]
+        shape(bootstrap, "admin realm", f"{label}.keycloakBootstrap")
+        file_reference(bootstrap["admin"], "Secret", ["username", "password"],
+                       f"{label}.keycloakBootstrap.admin")
+        file_reference(bootstrap["realm"], "Secret", ["flowai-e2e-realm.json"],
+                       f"{label}.keycloakBootstrap.realm")
+    if "liteLLMProviderTrust" in bindings:
+        trust = bindings["liteLLMProviderTrust"]
+        shape(trust, "hostAddress bundle", f"{label}.liteLLMProviderTrust")
+        check(matches(trust["hostAddress"], r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}"),
+              f"{label}.liteLLMProviderTrust.hostAddress")
+        try:
+            address = ipaddress.IPv4Address(trust["hostAddress"])
+        except ValueError:
+            raise InvalidInput(f"{label}.liteLLMProviderTrust.hostAddress") from None
+        check(not (address.is_unspecified or address.is_loopback or address.is_multicast),
+              f"{label}.liteLLMProviderTrust.hostAddress")
+        file_reference(trust["bundle"], "ConfigMap", ["ca.pem"],
+                       f"{label}.liteLLMProviderTrust.bundle")
+
+
+def adoption_inputs(inventory, namespace):
+    label = "adoptionInputs"
+    shape(inventory, "namespace liteLLMImage keycloakImage ingressNodePort", label)
+    check(inventory["namespace"] == namespace, f"{label}.namespace")
+    for field in ("liteLLMImage", "keycloakImage"):
+        image = inventory[field]
+        pattern = rf"[a-z0-9][a-z0-9.:/-]*/[a-z0-9][a-z0-9._-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?@{DIGEST}"
+        check(matches(image, pattern) and ":latest@" not in image.lower()
+              and digest(image.rsplit("@", 1)[1]),
+              f"{label}.{field}")
+    port = inventory["ingressNodePort"]
+    check(type(port) is int and 1 <= port <= 65535, f"{label}.ingressNodePort")
+    return inventory
+
+
+def protected_refs(protected, namespace, storage_mode=None, identity_routing=False):
     fields = "schema namespace tls"
     if storage_mode is not None:
         check(storage_mode in ("adopt", "fresh"), "storageMode")
         fields += " sharedPlatform"
+    if identity_routing:
+        check(storage_mode is not None, "storageMode")
+        fields += " identityRouting"
     protected_fields(protected, fields.split(), "protectedReferences")
     check(type(protected["schema"]) is int and protected["schema"] == 1, "protectedReferences.schema")
     check(protected["namespace"] == namespace, "protectedReferences.namespace")
@@ -196,6 +256,8 @@ def protected_refs(protected, namespace, storage_mode=None):
         file_reference(ref, kind, keys, label)
     if storage_mode is not None:
         shared_platform_refs(protected["sharedPlatform"], storage_mode)
+    if identity_routing:
+        identity_routing_refs(protected["identityRouting"], storage_mode)
     return protected["tls"]
 
 
@@ -314,15 +376,28 @@ def verify_receipt(pin, receipt_root, label):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("candidate", "receipt-root", "runtime-target", "owned-target"):
-        parser.add_argument(f"--{name}", type=Path, required=True)
+        parser.add_argument(f"--{name}", type=Path)
     for name in ("chart-revision", "input-revision", "e2e-revision"):
-        parser.add_argument(f"--{name}", required=True)
+        parser.add_argument(f"--{name}")
     references = parser.add_mutually_exclusive_group(required=True)
     references.add_argument("--protected-refs", type=Path)
     references.add_argument("--sops-reference-envelope", type=Path)
     parser.add_argument("--age-key-file", type=Path)
     parser.add_argument("--shared-platform-storage", choices=("adopt", "fresh"))
+    parser.add_argument("--identity-routing-values", type=Path)
+    parser.add_argument("--adoption-inputs", type=Path)
     args = parser.parse_args()
+    for name in ("runtime_target", "owned_target"):
+        check(getattr(args, name) is not None, name)
+    routing = args.identity_routing_values is not None
+    adopting = routing and args.shared_platform_storage == "adopt"
+    check(adopting == bool(args.adoption_inputs), "adoptionInputs")
+    if adopting:
+        check(not any((args.candidate, args.receipt_root, args.chart_revision,
+                       args.input_revision, args.e2e_revision)), "adoptionInputs or candidate")
+    else:
+        for name in ("candidate", "receipt_root", "chart_revision", "input_revision", "e2e_revision"):
+            check(getattr(args, name) is not None, name)
     check(bool(args.sops_reference_envelope) == bool(args.age_key_file), "sopsAgeKeyFile")
     private_file(args.runtime_target, "runtimeTarget")
     private_file(args.owned_target, "ownedTarget")
@@ -330,16 +405,42 @@ def main():
         read_json(args.runtime_target, "runtimeTarget"),
         read_json(args.owned_target, "ownedTarget"),
     )
-    candidate_pins(
-        read_json(args.candidate, "candidate"), args.receipt_root,
-        args.chart_revision, args.input_revision, args.e2e_revision,
-    )
+    if adopting:
+        private_file(args.adoption_inputs, "adoptionInputs")
+        inventory = adoption_inputs(
+            read_json(args.adoption_inputs, "adoptionInputs"), target["namespace"],
+        )
+    else:
+        images = candidate_pins(
+            read_json(args.candidate, "candidate"), args.receipt_root,
+            args.chart_revision, args.input_revision, args.e2e_revision,
+        )
     if args.protected_refs:
         private_file(args.protected_refs, "protectedReferences")
         references = read_json(args.protected_refs, "protectedReferences")
     else:
         references = decrypt_reference_envelope(args.sops_reference_envelope, args.age_key_file)
-    protected_refs(references, target["namespace"], args.shared_platform_storage)
+    protected_refs(references, target["namespace"], args.shared_platform_storage, routing)
+    if routing:
+        release_inputs = {
+            "target": target,
+            "liteLLMImage": inventory["liteLLMImage"] if adopting else images["litellm-gateway"],
+        }
+        if adopting:
+            release_inputs["keycloakAdoptionImage"] = inventory["keycloakImage"]
+            release_inputs["ingressNodePort"] = inventory["ingressNodePort"]
+        values = {
+            "namespace": target["namespace"],
+            "storageMode": args.shared_platform_storage,
+            "protectedReferences": references,
+            "identityRouting": release_inputs,
+        }
+        try:
+            with os.fdopen(os.open(args.identity_routing_values,
+                                   os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
+                json.dump(values, output)
+        except OSError:
+            raise InvalidInput("identityRoutingValues") from None
     print("Candidate and DTU reference structure verified.")
 
 

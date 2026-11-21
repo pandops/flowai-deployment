@@ -1,0 +1,58 @@
+# LiteLLM management API route allowlist, shared by the Helm and Docker
+# Compose deployments. Only the operations model-registry uses, qualified for
+# LiteLLM v1.104.0-rc.2, are forwarded; every other path, including the
+# upstream Admin UI, API docs and GET /credentials (which returns masked
+# credential fragments), is answered with 404 before reaching LiteLLM.
+#
+# Rendered by the nginx image's envsubst step: ${PROXY_PORT},
+# ${LITELLM_UPSTREAM} and ${NGINX_LOCAL_RESOLVERS} come from the container
+# environment.
+server {
+    listen ${PROXY_PORT};
+    server_tokens off;
+    client_max_body_size 1m;
+
+    # Blocked requests get a plain body that names neither LiteLLM nor the
+    # proxy. Upstream errors pass through unchanged (no proxy_intercept_errors).
+    error_page 404 @not_found;
+    location @not_found { default_type text/plain; return 404 "not found\n"; }
+
+    # Resolve the upstream at request time (re-checked every 10 s): a
+    # restarted LiteLLM container can come back with a new address.
+    # NGINX_LOCAL_RESOLVERS is filled in by the image entrypoint from
+    # /etc/resolv.conf when NGINX_ENTRYPOINT_LOCAL_RESOLVERS is set.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+    set $litellm_upstream http://${LITELLM_UPSTREAM};
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Connection "";
+    proxy_read_timeout 60s;
+
+    location = /health/readiness { if ($request_method != GET) { return 404; } proxy_pass $litellm_upstream; }
+    location = /health/liveness { if ($request_method != GET) { return 404; } proxy_pass $litellm_upstream; }
+
+    # Models
+    location = /model/new { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location = /model/info { if ($request_method != GET) { return 404; } proxy_pass $litellm_upstream; }
+    location = /model/delete { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location ~ ^/model/[A-Za-z0-9-]+/update$ { if ($request_method != PATCH) { return 404; } proxy_pass $litellm_upstream; }
+
+    # Named provider credentials (write, replace, clear; never list)
+    location = /credentials { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location ~ ^/credentials/[A-Za-z0-9._-]+$ { if ($request_method !~ ^(PATCH|DELETE)$) { return 404; } proxy_pass $litellm_upstream; }
+
+    # Virtual keys
+    location = /key/generate { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location = /key/update { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location = /key/info { if ($request_method != GET) { return 404; } proxy_pass $litellm_upstream; }
+    location = /key/delete { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+
+    # Teams (one per flow, for flow budgets and per-minute limits)
+    location = /team/new { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location = /team/update { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+    location = /team/info { if ($request_method != GET) { return 404; } proxy_pass $litellm_upstream; }
+    location = /team/delete { if ($request_method != POST) { return 404; } proxy_pass $litellm_upstream; }
+
+    location / { return 404; }
+}

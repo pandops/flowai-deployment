@@ -1,0 +1,6 @@
+apiVersion: v2
+name: litellm-gateway
+description: FlowAI LiteLLM gateway with durable PostgreSQL and internal management and data-plane Services.
+type: application
+version: 0.2.0
+appVersion: "1.104.0-rc.2"

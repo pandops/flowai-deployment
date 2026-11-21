@@ -1,0 +1,95 @@
+{{- $mode := .Values.storageMode }}
+{{- if not (has $mode (list "fresh" "adopt")) }}{{ fail "Keycloak storageMode must be fresh or adopt" }}{{ end }}
+{{- $fresh := eq $mode "fresh" }}
+{{- $official := "quay.io/keycloak/keycloak:26.6.3@sha256:9b0330756022422149aa6502eb2def8cd47c6e1b000c7c65cdb13e7c0133e992" }}
+{{- $image := $official }}
+{{- if not $fresh }}
+{{- $image = required "Keycloak adoption image from preflight is required" .Values.adoptionImage }}
+{{- if not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $image) }}{{ fail "Keycloak adoption image must be digest pinned" }}{{ end }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+spec:
+  selector: {app: keycloak}
+  ports: [{port: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: keycloak}
+  template:
+    metadata:
+      labels: {app: keycloak}
+    spec:
+      automountServiceAccountToken: false
+      {{- if not $fresh }}
+      initContainers:
+        - name: existing-realm-storage
+          image: {{ $image | quote }}
+          command: [sh, -ec, 'test -s /data/h2/keycloakdb.mv.db']
+          volumeMounts:
+            - {name: data, mountPath: /data, readOnly: true}
+      {{- end }}
+      containers:
+        - name: keycloak
+          image: {{ $image | quote }}
+          {{- if $fresh }}
+          args: [start, --db=dev-file, --cache=local, --import-realm]
+          {{- else }}
+          args: [start, --optimized, --db=dev-file, --cache=local]
+          {{- end }}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe:
+            httpGet: {path: /realms/master/.well-known/openid-configuration, port: http}
+            periodSeconds: 2
+          env:
+            - {name: KC_HTTP_ENABLED, value: "true"}
+            - {name: KC_HOSTNAME, value: {{ printf "%s/idp" (required "Keycloak origin is required" .Values.origin) | quote }}}
+            - {name: KC_PROXY_HEADERS, value: xforwarded}
+            {{- if $fresh }}
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bootstrap.admin.name | quote }}
+                  key: username
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bootstrap.admin.name | quote }}
+                  key: password
+            {{- end }}
+          volumeMounts:
+            - {name: data, mountPath: /opt/keycloak/data}
+            {{- if $fresh }}
+            - {name: realm, mountPath: /opt/keycloak/data/import, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: keycloak}
+        {{- if $fresh }}
+        - name: realm
+          secret:
+            secretName: {{ .Values.bootstrap.realm.name | quote }}
+            items: [{key: flowai-e2e-realm.json, path: flowai-e2e-realm.json}]
+        {{- end }}
+{{- if $fresh }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: keycloak
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: {storage: 1Gi}
+{{- end }}
