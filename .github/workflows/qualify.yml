@@ -1,0 +1,47 @@
+name: Qualify deployment foundation
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: Full commit SHA of the deployment foundation
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify selected source revision
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_source_sha }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ && "$EXPECTED_SHA" == "$GITHUB_SHA" ]]
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify bootstrap inputs
+        run: |
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          test -f scripts/qualify-static.py
+      - name: Install pinned Helm tooling
+        run: |
+          set -euo pipefail
+          install -d "$RUNNER_TEMP/flowai-helm-tools"
+          cd "$RUNNER_TEMP/flowai-helm-tools"
+          curl --fail --silent --show-error --location --proto '=https' \
+            --output helm.tar.gz https://get.helm.sh/helm-v4.1.4-linux-amd64.tar.gz
+          curl --fail --silent --show-error --location --proto '=https' \
+            --output helmfile.tar.gz \
+            https://github.com/helmfile/helmfile/releases/download/v1.4.4/helmfile_1.4.4_linux_amd64.tar.gz
+          sha256sum --check <<'CHECKSUMS'
+          70b2c30a19da4db264dfd68c8a3664e05093a361cefd89572ffb36f8abfa3d09  helm.tar.gz
+          3c35a7d7f65e900fa770cc27c119b1f48d458cd5755b4103e679ba5eb029ec91  helmfile.tar.gz
+          CHECKSUMS
+          tar -xzf helm.tar.gz linux-amd64/helm
+          tar -xzf helmfile.tar.gz helmfile
+          mv linux-amd64/helm .
+          printf '%s\n' "$PWD" >> "$GITHUB_PATH"
+      - name: Lint and render with synthetic references
+        run: python3 -B scripts/qualify-static.py
