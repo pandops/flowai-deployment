@@ -43,6 +43,18 @@ BEGIN
     JOIN pg_roles AS r ON r.oid = c.relowner
     JOIN pg_namespace AS n ON n.oid = c.relnamespace
     WHERE r.rolname = '{{ $role }}' AND n.nspname <> '{{ $schema }}'
+      -- Native TOAST storage belongs to its parent table's owner.
+      AND NOT (n.nspname = 'pg_toast' AND EXISTS (
+        SELECT 1 FROM pg_class AS parent
+        JOIN pg_namespace AS parent_schema ON parent_schema.oid = parent.relnamespace
+        JOIN pg_class AS toast ON toast.oid = parent.reltoastrelid
+        LEFT JOIN pg_index AS idx ON idx.indrelid = toast.oid AND idx.indexrelid = c.oid
+        WHERE parent_schema.nspname = '{{ $schema }}'
+          AND parent.relowner = c.relowner
+          AND toast.relnamespace = n.oid
+          AND toast.relowner = c.relowner AND toast.relkind = 't'
+          AND (toast.oid = c.oid OR (c.relkind = 'i' AND idx.indexrelid IS NOT NULL))
+      ))
   ) THEN
     RAISE EXCEPTION 'Unexpected schema ownership for {{ $role }}';
   END IF;
