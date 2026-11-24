@@ -42,6 +42,13 @@ declarations, and resolves required upstream inputs before offering a
 deployment descriptor. Retain public receipts for each selectable manifest.
 The first selectable snapshot requires the complete qualified set.
 
+A receipt may retain a tested publisher revision when the selected source
+revision has the same bytes at that schema path. For a revision mismatch,
+stage the selected commit in a private, standalone bare Git repository at
+`<receipt-root>/publisher-git/<repository slug>/<selected source SHA>`.
+Preflight checks the commit, trees and blob offline and compares the blob
+SHA-256 to the retained receipt. Matching revisions need no Git proof.
+
 ## Private target and protected references
 
 `runtimeTarget` and the independent coordinator-owned `ownedTarget` are

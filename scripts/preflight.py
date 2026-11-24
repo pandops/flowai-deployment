@@ -369,7 +369,75 @@ def schema_inputs(inputs, catalog, label):
         existing.add((repo, path))
 
 
-def candidate_pins(candidate, receipt_root, chart_revision, input_revision, e2e_revision):
+def publisher_schema(receipt_root, repository, revision_sha, path, label):
+    # Read only the objects anchoring this path to the selected publisher SHA.
+    # The coordinator supplies a local bare fetch and the chart verifies the
+    # objects without trusting its refs, Git environment or a digest claim.
+    slug = repository.removeprefix("pandops/")
+    check(matches(slug, LABEL), label)
+    repo = (receipt_root / "publisher-git" / slug / revision_sha).absolute()
+    try:
+        info = repo.lstat()
+        check(
+            stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+            and info.st_mode & 0o077 == 0,
+            label,
+        )
+        check(stat.S_ISDIR((repo / "objects").lstat().st_mode), label)
+        for redirect in ("commondir", "objects/info/alternates"):
+            anchor = repo / redirect
+            check(not anchor.exists() and not anchor.is_symlink(), label)
+    except OSError:
+        raise InvalidInput(label) from None
+
+    env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_ALLOW_PROTOCOL": "",
+    }
+
+    def object_bytes(kind, oid):
+        try:
+            result = subprocess.run(
+                ["git", "--no-replace-objects", f"--git-dir={repo}", "cat-file", kind, oid],
+                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=15, check=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise InvalidInput(label) from None
+        content = result.stdout
+        header = f"{kind} {len(content)}\0".encode()
+        check(hashlib.sha1(header + content).hexdigest() == oid, label)
+        return content
+
+    commit = object_bytes("commit", revision_sha)
+    tree_line = commit.partition(b"\n")[0]
+    check(re.fullmatch(rb"tree [0-9a-f]{40}", tree_line), label)
+    oid = tree_line[5:].decode("ascii")
+    names = path.encode("ascii").split(b"/")
+    for index, name in enumerate(names):
+        entries = object_bytes("tree", oid)
+        modes = (b"100644", b"100755") if index == len(names) - 1 else (b"40000",)
+        start = 0
+        while start < len(entries):
+            end = entries.find(b"\0", start)
+            check(end >= start and end + 21 <= len(entries), label)
+            mode, _, entry_name = entries[start:end].partition(b" ")
+            if mode in modes and entry_name == name:
+                oid = entries[end + 1:end + 21].hex()
+                break
+            start = end + 21
+        else:
+            raise InvalidInput(label)
+    return object_bytes("blob", oid)
+
+
+def candidate_pins(
+    candidate, receipt_root, chart_revision, input_revision, e2e_revision,
+    *, verify_publisher_proofs=True,
+):
     components = read_json(ROOT / "manifests/components.json", "components")
     fields = "schema stage chartRevision inputRevision e2eRevision components"
     shape(candidate, fields, "candidate")
@@ -394,6 +462,7 @@ def candidate_pins(candidate, receipt_root, chart_revision, input_revision, e2e_
     check(not missing, "missing pins: " + ", ".join(missing))
     version_pattern = SNAPSHOT if stage == "snapshot" else STABLE
     outputs = {}
+    publisher_digests = {}
     for component, slug in components.items():
         repository = f"pandops/{slug}"
         pin = pins[component]
@@ -410,8 +479,18 @@ def candidate_pins(candidate, receipt_root, chart_revision, input_revision, e2e_
         check(digest(checksum), f"{label}: qualificationDigest")
         schema_inputs(pin["schemaInputs"], catalog, f"{label}: schemaInputs")
         for item in pin["schemaInputs"]:
-            publisher = pins[catalog[item["repository"]]]
-            check(item["sourceRevision"] == publisher.get("sourceRevision"), f"{label}: publisher revision")
+            repository = item["repository"]
+            publisher_revision = pins[catalog[repository]].get("sourceRevision")
+            if item["sourceRevision"] != publisher_revision:
+                path = item["path"]
+                proof_label = f"{label}: publisher revision proof for {repository}/{path}"
+                check(revision(publisher_revision), proof_label)
+                if verify_publisher_proofs:
+                    key = repository, publisher_revision, path
+                    if key not in publisher_digests:
+                        content = publisher_schema(receipt_root, *key, proof_label)
+                        publisher_digests[key] = "sha256:" + hashlib.sha256(content).hexdigest()
+                    check(publisher_digests[key] == item["digest"], proof_label)
         verify_receipt(pin, receipt_root, label)
         outputs[component] = f'ghcr.io/{repository}:{pin["version"]}@{pin["imageDigest"]}'
     return outputs
