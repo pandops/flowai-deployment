@@ -479,14 +479,14 @@ def candidate_pins(
         check(digest(checksum), f"{label}: qualificationDigest")
         schema_inputs(pin["schemaInputs"], catalog, f"{label}: schemaInputs")
         for item in pin["schemaInputs"]:
-            repository = item["repository"]
-            publisher_revision = pins[catalog[repository]].get("sourceRevision")
+            publisher_repository = item["repository"]
+            publisher_revision = pins[catalog[publisher_repository]].get("sourceRevision")
             if item["sourceRevision"] != publisher_revision:
                 path = item["path"]
-                proof_label = f"{label}: publisher revision proof for {repository}/{path}"
+                proof_label = f"{label}: publisher revision proof for {publisher_repository}/{path}"
                 check(revision(publisher_revision), proof_label)
                 if verify_publisher_proofs:
-                    key = repository, publisher_revision, path
+                    key = publisher_repository, publisher_revision, path
                     if key not in publisher_digests:
                         content = publisher_schema(receipt_root, *key, proof_label)
                         publisher_digests[key] = "sha256:" + hashlib.sha256(content).hexdigest()
