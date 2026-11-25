@@ -1,11 +1,11 @@
 {{- $mode := .Values.storageMode }}
 {{- if not (has $mode (list "fresh" "adopt")) }}{{ fail "Keycloak storageMode must be fresh or adopt" }}{{ end }}
 {{- $fresh := eq $mode "fresh" }}
-{{- $official := "quay.io/keycloak/keycloak:26.6.3@sha256:9b0330756022422149aa6502eb2def8cd47c6e1b000c7c65cdb13e7c0133e992" }}
+{{- $official := "quay.io/keycloak/keycloak:26.6.3" }}
 {{- $image := $official }}
 {{- if not $fresh }}
 {{- $image = required "Keycloak adoption image from preflight is required" .Values.adoptionImage }}
-{{- if not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $image) }}{{ fail "Keycloak adoption image must be digest pinned" }}{{ end }}
+{{- if or (not (regexMatch "^[^@[:space:]]+/[^/@:[:space:]]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" $image)) (hasSuffix ":latest" (lower $image)) }}{{ fail "Keycloak adoption image requires an explicit version tag" }}{{ end }}
 {{- end }}
 apiVersion: v1
 kind: Service

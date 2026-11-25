@@ -229,10 +229,14 @@ def identity_routing_refs(bindings, storage_mode):
                        f"{label}.liteLLMProviderTrust.bundle")
 
 
-def pinned_inventory_image(image, label):
-    pattern = rf"[a-z0-9][a-z0-9.:/-]*/[a-z0-9][a-z0-9._-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?@{DIGEST}"
-    check(matches(image, pattern) and ":latest@" not in image.lower()
-          and digest(image.rsplit("@", 1)[1]), label)
+def inventory_image_tag(image, label):
+    pattern = r"[a-z0-9][a-z0-9.:/-]*/[a-z0-9][a-z0-9._-]*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
+    check(isinstance(image, str), label)
+    tag, separator, legacy_digest = image.partition("@")
+    check(matches(tag, pattern) and not tag.lower().endswith(":latest"), label)
+    if separator:
+        check(digest(legacy_digest), label)
+    return tag
 
 
 def adoption_inputs(inventory, namespace, catalog):
@@ -240,10 +244,10 @@ def adoption_inputs(inventory, namespace, catalog):
     shape(inventory, "namespace liteLLMImage keycloakImage ingressNodePort workloadImages", label)
     check(inventory["namespace"] == namespace, f"{label}.namespace")
     for field in ("liteLLMImage", "keycloakImage"):
-        pinned_inventory_image(inventory[field], f"{label}.{field}")
+        inventory[field] = inventory_image_tag(inventory[field], f"{label}.{field}")
     protected_fields(inventory["workloadImages"], catalog, f"{label}.workloadImages")
     for name, image in inventory["workloadImages"].items():
-        pinned_inventory_image(image, f"{label}.workloadImages.{name}")
+        inventory["workloadImages"][name] = inventory_image_tag(image, f"{label}.workloadImages.{name}")
     port = inventory["ingressNodePort"]
     check(type(port) is int and 1 <= port <= 65535, f"{label}.ingressNodePort")
     return inventory
@@ -468,13 +472,15 @@ def candidate_pins(
         pin = pins[component]
         selected = pin.get("sourceRevision")
         label = f"{repository} at {selected if revision(selected) else 'unresolved source revision'}"
-        fields = "repository sourceRevision buildSourceRevision version imageDigest qualificationDigest schemaInputs"
+        fields = "repository sourceRevision buildSourceRevision version qualificationDigest schemaInputs"
+        if "imageDigest" in pin:
+            fields += " imageDigest"
+            check(digest(pin["imageDigest"]), f"{label}: imageDigest")
         shape(pin, fields, f"{label}: image or qualification pin incomplete")
         check(pin["repository"] == repository, f"{label}: repository")
         check(revision(selected), f"{label}: sourceRevision")
         check(revision(pin["buildSourceRevision"]), f"{label}: buildSourceRevision")
         check(matches(pin["version"], version_pattern), f"{label}: version")
-        check(digest(pin["imageDigest"]), f"{label}: imageDigest")
         checksum = pin["qualificationDigest"]
         check(digest(checksum), f"{label}: qualificationDigest")
         schema_inputs(pin["schemaInputs"], catalog, f"{label}: schemaInputs")
@@ -492,7 +498,7 @@ def candidate_pins(
                         publisher_digests[key] = "sha256:" + hashlib.sha256(content).hexdigest()
                     check(publisher_digests[key] == item["digest"], proof_label)
         verify_receipt(pin, receipt_root, label)
-        outputs[component] = f'ghcr.io/{repository}:{pin["version"]}@{pin["imageDigest"]}'
+        outputs[component] = f'ghcr.io/{repository}:{pin["version"]}'
     return outputs
 
 
@@ -502,8 +508,13 @@ def verify_receipt(pin, receipt_root, label):
     raw = read_bytes(receipt_root / f"{checksum}.json", label)
     check(hashlib.sha256(raw).hexdigest() == checksum, label)
     receipt = parse_json(raw, label)
-    fields = "repository sourceRevision buildSourceRevision version imageDigest schemaInputs"
-    shape(receipt, f"schema {fields} workflowPath runId outcomes", label)
+    fields = "repository sourceRevision buildSourceRevision version schemaInputs"
+    legacy_evidence = " imageDigest" if "imageDigest" in receipt else ""
+    shape(receipt, f"schema {fields}{legacy_evidence} workflowPath runId outcomes", label)
+    if legacy_evidence:
+        check(digest(receipt["imageDigest"]), label)
+    if "imageDigest" in pin:
+        check(receipt.get("imageDigest") == pin["imageDigest"], label)
     check(type(receipt["schema"]) is int and receipt["schema"] == 1, label)
     check(all(receipt[key] == pin[key] for key in fields.split()), label)
     check(matches(receipt["workflowPath"], r"\.github/workflows/[A-Za-z0-9_-]+\.ya?ml"), label)

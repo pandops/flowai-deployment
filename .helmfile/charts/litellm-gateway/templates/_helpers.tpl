@@ -19,8 +19,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- fail "storageMode must be fresh or adopt" -}}
 {{- end -}}
 {{- $image := required "LiteLLM image from preflight is required" .Values.image -}}
-{{- if not (regexMatch "^([a-z0-9][a-z0-9.:/-]*/)?[a-z0-9][a-z0-9._-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]*)?@sha256:[a-f0-9]{64}$" $image) -}}
-{{- fail "LiteLLM image must be digest pinned" -}}
+{{- if or (not (regexMatch "^[^@[:space:]]+/[^/@:[:space:]]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" $image)) (hasSuffix ":latest" (lower $image)) -}}
+{{- fail "LiteLLM image requires an explicit version tag" -}}
 {{- end -}}
 {{- if and (eq .Values.storageMode "fresh") (not (hasPrefix "ghcr.io/pandops/flowai-litellm-gateway:" $image)) -}}
 {{- fail "fresh LiteLLM requires the qualified candidate image" -}}

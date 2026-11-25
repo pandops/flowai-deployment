@@ -1,5 +1,4 @@
-# The digest is the tracked baseline's upstream 16 index (PostgreSQL 16.15).
-image: docker.io/library/postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+image: docker.io/library/postgres:16.15
 storageMode: ""
 tls: {}
 standCA: {}

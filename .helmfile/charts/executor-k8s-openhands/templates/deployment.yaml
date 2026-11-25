@@ -1,4 +1,7 @@
 {{- $image := required "image.reference must come from the verified candidate" .Values.image.reference }}
+{{- if or (not (regexMatch "^[^@[:space:]]+/[^/@:[:space:]]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" $image)) (hasSuffix ":latest" (lower $image)) }}
+{{- fail "Executor image requires an explicit version tag" }}
+{{- end }}
 {{- $configPath := printf "%s/config/config.yaml" .Values.executor.dataDir }}
 apiVersion: apps/v1
 kind: Deployment

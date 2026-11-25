@@ -127,7 +127,7 @@ jobs:
 
 
           def verify_platform(directory, env, target, tls):
-              fixture = "sha256:" + "a" * 64
+              fixture = "1.2.3"
 
               def private_json(name, document):
                   path = directory / name
@@ -180,9 +180,9 @@ jobs:
               inventory = {
                   "namespace": target["namespace"],
                   "ingressNodePort": 31443,
-                  "liteLLMImage": f"registry.invalid/preview/litellm@{fixture}",
-                  "keycloakImage": f"registry.invalid/preview/keycloak@{fixture}",
-                  "workloadImages": {name: f"registry.invalid/preview/{name}@{fixture}" for name in names},
+                  "liteLLMImage": f"registry.invalid/preview/litellm:{fixture}",
+                  "keycloakImage": f"registry.invalid/preview/keycloak:{fixture}",
+                  "workloadImages": {name: f"registry.invalid/preview/{name}:{fixture}" for name in names},
               }
               target_file = private_json("target.json", target)
               values = str(directory / "platform.json")
@@ -204,6 +204,11 @@ jobs:
               if len(releases) != len(expected) or {item["name"] for item in releases} != expected:
                   raise SystemExit("Unexpected platform release graph")
               output = run([*command, "template"], env)
+              images = [line.strip().split(":", 1)[1].strip().strip('"')
+                        for line in output.splitlines() if line.strip().startswith("image:")]
+              if not images or any("@" in image or ":" not in image.rsplit("/", 1)[-1]
+                                   or image.lower().endswith(":latest") for image in images):
+                  raise SystemExit("Every rendered container must use an explicit image tag")
               for image in inventory["workloadImages"].values():
                   if output.count(f'image: "{image}"\n') != 1:
                       raise SystemExit("Platform workload image pin did not render exactly once")
