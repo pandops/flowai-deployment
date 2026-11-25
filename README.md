@@ -38,9 +38,8 @@ Use the resolved HTTPS `origin` for ingress, OIDC issuer and redirects,
 secure cookie origin-dependent settings, and Web UI same-origin routing.
 The Gitea coordinator owns worktree port allocation and the port 4173
 handoff. Charts consume those decisions. For images owned by FlowAI, accept
-the fully resolved `ghcr.io/pandops/<package>:<version>@sha256:<digest>`
-reference from preflight. A release for an upstream image records its exact
-upstream version and digest independently.
+the fully resolved `ghcr.io/pandops/<package>:<version>` reference from
+preflight. Upstream images use explicit version tags as well.
 
 For an upstream chart, check whether it preserves existing resource and
 release identities before choosing it. Record upstream provenance and license,
@@ -58,7 +57,7 @@ chart has neither dependencies nor a generated lock.
 | 2.6 Keycloak | [Owned `keycloak` and `keycloak-client` 0.1.0](.helmfile/charts/keycloak/Chart.yaml) | Use the approved current image and claim for first adoption. Fresh uses official Keycloak 26.6.3. Reconcile the Gateway client through ingress. |
 | 2.7 ingress | [Owned `ingress` 0.1.0](.helmfile/charts/ingress/Chart.yaml) | Preserve `ingress` and `ingress-host`, certificate identity, address and worktree port. |
 | 2.8–2.19 platform workloads | [Owned `platform-workload` 0.1.0](.helmfile/charts/platform-workload/Chart.yaml), dependency-free | Each release owns its workload and receives only its own protected bindings. Existing service, broker, network and database boundaries apply. |
-| 2.20 MockServer | Gitea `fixtures/mockserver/.helmfile/` | Pin its upstream digest in Gitea and use the approved shared fixture namespace. |
+| 2.20 MockServer | Gitea `fixtures/mockserver/.helmfile/` | Select its upstream version tag in Gitea and use the approved shared fixture namespace. |
 | 3.3 K8s Executor | Existing owned `executor/k8s-openhands/deploy/k8s/chart` 0.1.0, no chart dependencies | On-demand. Accept `namespace`, `releaseName`, `candidateManifest` and private `tokenFile`. Scope team, tag and release lifecycle to their owner. |
 
 The migration slices own chart selections and exact external dependencies
@@ -116,14 +115,13 @@ and durable consumers remain in place.
 
 ### Shared upstream image provenance
 
-The images retain the exact indices from the Gitea baseline. Each chart
-has zero dependencies, so Helm has no dependency lock to generate.
+The charts use these upstream tags. They have no chart dependencies.
 
-| Use | Upstream version | Pinned Docker Hub index digest |
-| --- | --- | --- |
-| PostgreSQL server and bootstrap | PostgreSQL 16.15, package `16.15-1.pgdg13+2`, baseline tag `16` | `sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54` |
-| NATS server | `2.11.17-alpine` | `sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00` |
-| JetStream bootstrap | NATS Box `0.18.1`, NATS CLI `0.2.4` | `sha256:abb33f930d25425dce3472039a0ffac7427344f7c0b7ef9849b9fe45bb8895fe` |
+| Use | Tag |
+| --- | --- |
+| PostgreSQL server and bootstrap | `16.15` |
+| NATS server | `2.11.17-alpine` |
+| JetStream bootstrap | NATS Box `0.18.1` |
 
 [PostgreSQL image source](https://github.com/docker-library/postgres)
 · [NATS Server v2.11.17 JetStream API and configuration](https://github.com/nats-io/nats-server/tree/v2.11.17/server)
@@ -152,13 +150,12 @@ the ingress NodePort is available and explicitly waits for Gateway
 reconciles the client over cluster ingress with the external issuer identity.
 
 - LiteLLM keeps its original Deployment, StatefulSet and
-  `data-litellm-gateway-postgresql-0` claim identity. It uses the same
-  PostgreSQL 16 pin, 1 GiB volume claim template and PGDATA path as the
-  baseline. First adoption reuses the existing Helm release and requires
+  `data-litellm-gateway-postgresql-0` claim identity. It uses PostgreSQL 16.15 and retains
+  the baseline 1 GiB volume claim template and PGDATA path. First adoption reuses the existing Helm release and requires
   the initialized claim. The only Services exposed by the gateway
   Deployment are `litellm-gateway-management.<namespace>.svc.cluster.local:4000`
   and `litellm-gateway-data.<namespace>.svc.cluster.local:4000`. Both use
-  the baseline digest-pinned nginx sidecars with distinct allowlists and
+  versioned nginx sidecars with distinct allowlists and
   route to LiteLLM on loopback. The management listener admits the owning
   model registry, and the data listener admits labeled task Pods in the
   same namespace. The host coordinator separately forwards only the data
@@ -167,7 +164,7 @@ reconciles the client over cluster ingress with the external issuer identity.
   rollout. The charts create no relay or host-port binding for LiteLLM.
 - Keycloak keeps the `keycloak` claim mounted at `/opt/keycloak/data`.
   Fresh mode mounts a private startup import and uses
-  `quay.io/keycloak/keycloak:26.6.3@sha256:9b0330756022422149aa6502eb2def8cd47c6e1b000c7c65cdb13e7c0133e992`.
+  `quay.io/keycloak/keycloak:26.6.3`.
   Adoption mounts the existing claim with a startup storage guard and
   runs the inventoried legacy image without importing a realm or setting
   bootstrap credentials. Verify the data directory and ownership against

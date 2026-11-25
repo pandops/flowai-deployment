@@ -7,8 +7,8 @@
 {{- $gateway := eq $mode "gateway" }}
 {{- $config := eq $mode "config" }}
 {{- $image := required "platform workload image is required" .Values.image }}
-{{- if or (not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $image)) (contains ":latest@" (lower $image)) }}
-{{- fail "platform workload image must be pinned by digest without latest" }}
+{{- if or (not (regexMatch "^[^@[:space:]]+/[^/@:[:space:]]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" $image)) (hasSuffix ":latest" (lower $image)) }}
+{{- fail "platform workload image requires an explicit version tag" }}
 {{- end }}
 {{- $issuer := printf "%s/idp/realms/flowai-e2e" .Values.origin }}
 apiVersion: v1

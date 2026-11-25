@@ -29,7 +29,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: reconcile
-          image: docker.io/library/python:3.13-alpine@sha256:2dd78ad5cf13a0b68f5134dc49aa9950203a8cf4b7463431b9f3b398287c5059
+          image: docker.io/library/python:3.13.16-alpine
           command: [python, -I, /job/reconcile.py]
           args: [{{ required "client origin is required" .Values.origin | quote }}]
           securityContext:

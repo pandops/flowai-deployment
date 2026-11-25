@@ -24,13 +24,13 @@ Each pin has these fields.
 | `sourceRevision` | Selected full source commit |
 | `buildSourceRevision` | Original full build commit, including when reused |
 | `version` | Immutable semantic-release image tag matching the candidate stage |
-| `imageDigest` | Manifest digest as `sha256:<64 lower-case hex digits>` |
 | `qualificationDigest` | SHA-256 of the exact retained public receipt bytes |
 | `schemaInputs` | Array of exact publisher inputs, with `repository`, `sourceRevision`, `path` under `schemas/` and a SHA-256 `digest` per input |
 
 For each pin, `<receipt-root>/<qualificationDigest hex>.json` contains
-`schema: 1`, the six pin fields other than `qualificationDigest`,
-`workflowPath`, integer GitHub Actions `runId`, and `outcomes`.
+`schema: 1`, the pin fields other than `qualificationDigest`,
+`workflowPath`, integer GitHub Actions `runId`, and `outcomes`. Helmfile
+deploys the explicit version tag. Historical receipts may include an image digest.
 The outcomes object has `unit`, `integration` and `build`. Test
 outcomes are `success` or the applicable `not-applicable` result.
 `build` must be `success`.
@@ -176,7 +176,9 @@ receipt-validated image references. Adopt mode always requires
 `--adoption-inputs <absolute private inventory file>` containing exactly
 `namespace`, `liteLLMImage`, `keycloakImage`, `ingressNodePort` and
 `workloadImages`. The latter is a map of all 12 workload names to their
-exact inventoried image references. All inventoried images require digests.
+inventoried image references. Each image requires an explicit version tag.
+Inventory from older deployments may also include a digest suffix, which
+preflight removes from the reference passed to Helmfile.
 For the current-image handoff in task 2.21, omit all candidate flags.
 For a later qualified image transition in task 2.22, supply all candidate
 flags alongside inventory. This replaces the application and LiteLLM

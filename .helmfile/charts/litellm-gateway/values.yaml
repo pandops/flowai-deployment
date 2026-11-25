@@ -9,11 +9,11 @@ service:
   # Port of both internal Services (management and data plane).
   port: 4000
 
-# Digest-pinned reverse proxies in front of LiteLLM, one per role, each with
+# Version-tagged reverse proxies in front of LiteLLM, one per role, each with
 # its own path allowlist (files/proxy/*.conf.template). LiteLLM itself listens
 # only on the Pod's loopback interface.
 proxy:
-  image: docker.io/nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:26b0bf6fbf07297983cb341998d79c831508787de26627dd2a112321b9c3a4af
+  image: docker.io/nginxinc/nginx-unprivileged:1.31.6-alpine
   managementPort: 8080
   dataPort: 8081
   resources:
@@ -38,7 +38,7 @@ networkPolicy:
             flowai.io/litellm-data: client
 
 postgresql:
-  image: docker.io/library/postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+  image: docker.io/library/postgres:16.15
   database: litellm
   username: litellm
   storage:
