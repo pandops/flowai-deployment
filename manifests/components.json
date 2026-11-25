@@ -1,0 +1,17 @@
+{
+  "admin-panel": "flowai-admin-panel",
+  "api-gateway": "flowai-api-gateway",
+  "audit": "flowai-audit",
+  "env-registry": "flowai-env-registry",
+  "executor-registry": "flowai-executor-registry",
+  "executor_docker_openhands": "flowai-executor-docker-openhands",
+  "executor_k8s_openhands": "flowai-executor-k8s-openhands",
+  "flow-registry": "flowai-flow-registry",
+  "journal": "flowai-journal",
+  "litellm-gateway": "flowai-litellm-gateway",
+  "model-registry": "flowai-model-registry",
+  "source-controller": "flowai-source-controller",
+  "task-manager": "flowai-task-manager",
+  "team-registry": "flowai-team-registry",
+  "web-ui": "flowai-web-ui"
+}

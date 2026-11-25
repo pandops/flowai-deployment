@@ -1,0 +1,10 @@
+mode: ""
+image: ""
+origin: ""
+revision: ""
+fixtureHost: ""
+config: {}
+nats: {}
+standCA: {}
+trustBundle: {}
+extra: {}

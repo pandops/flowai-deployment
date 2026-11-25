@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-proxy
+  labels:
+    {{- include "litellm-gateway.labels" . | nindent 4 }}
+data:
+  management.conf.template: |
+{{ .Files.Get "files/proxy/management.conf.template" | indent 4 }}
+  data.conf.template: |
+{{ .Files.Get "files/proxy/data.conf.template" | indent 4 }}

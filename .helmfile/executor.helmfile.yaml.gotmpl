@@ -1,0 +1,44 @@
+environments:
+  dtu: {}
+  cleanup: {}
+---
+{{- $namespace := required "namespace is required" (getOrNil "namespace" .Values) -}}
+{{- $name := required "releaseName is required" (getOrNil "releaseName" .Values) -}}
+{{- if or (not (regexMatch "^[a-z0-9][a-z0-9-]{0,58}-dev$" $namespace)) (hasPrefix "kube-" $namespace) -}}
+{{- fail "namespace must name the existing worktree namespace" -}}
+{{- end -}}
+{{- if or (gt (len $name) 53) (not (regexMatch "^(executor-k8s-openhands(-[a-z0-9]([a-z0-9-]*[a-z0-9])?)?|e2e-ff-[a-f0-9]{8})$" $name)) -}}
+{{- fail "releaseName must be an Executor release name (executor-k8s-openhands with an optional owner suffix, or e2e-ff-<8 hex digits>)" -}}
+{{- end -}}
+{{- $install := eq .Environment.Name "dtu" -}}
+{{- if not (or $install (eq .Environment.Name "cleanup")) -}}
+{{- fail "select the dtu or cleanup environment" -}}
+{{- end }}
+helmDefaults:
+  createNamespace: false
+  wait: true
+  timeout: 180
+releases:
+  - name: {{ $name | quote }}
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/executor-k8s-openhands
+    needs: []
+    installed: {{ $install }}
+    suppressDiff: true
+    {{- if $install }}
+    {{- $cleanupDelay := .Values | get "finishedCleanupDelay" "0s" }}
+    {{- if not (regexMatch "^(0|[1-9][0-9]{0,8})s$" $cleanupDelay) }}
+    {{- fail "finishedCleanupDelay must be a duration in whole seconds (for example, 300s)" }}
+    {{- end }}
+    {{- $candidate := required "candidateManifest is required" (getOrNil "candidateManifest" .Values) }}
+    {{- $tokenFile := required "tokenFile is required" (getOrNil "tokenFile" .Values) }}
+    {{- $image := exec "python3" (list "-B" "../scripts/preflight.py" "executor" $candidate $tokenFile) | trim }}
+    values:
+      - image:
+          reference: {{ $image | quote }}
+        executor:
+          finishedCleanupDelay: {{ $cleanupDelay | quote }}
+    set:
+      - name: broker.token
+        file: {{ $tokenFile | quote }}
+    {{- end }}

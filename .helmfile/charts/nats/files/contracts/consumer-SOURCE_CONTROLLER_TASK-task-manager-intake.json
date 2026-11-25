@@ -1,0 +1,14 @@
+{
+  "stream_name": "SOURCE_CONTROLLER_TASK",
+  "config": {
+    "durable_name": "task-manager-intake",
+    "filter_subject": "source-controller.task.*.sub",
+    "ack_policy": "explicit",
+    "ack_wait": 30000000000,
+    "max_deliver": -1,
+    "deliver_policy": "all",
+    "replay_policy": "instant",
+    "max_ack_pending": 1
+  },
+  "action": "create"
+}

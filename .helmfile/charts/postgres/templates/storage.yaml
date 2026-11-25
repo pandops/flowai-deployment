@@ -1,0 +1,16 @@
+{{- if not (has .Values.storageMode (list "adopt" "fresh")) }}{{ fail "storageMode must be adopt or fresh" }}{{ end }}
+{{- if eq .Values.storageMode "fresh" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+{{- end }}

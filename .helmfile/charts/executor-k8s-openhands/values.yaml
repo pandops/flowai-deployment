@@ -1,0 +1,56 @@
+image:
+  reference: ""
+  pullPolicy: IfNotPresent
+
+# NATS JetStream message broker. broker.token is the Executor's one-time
+# JWT from executor-registry. Helmfile supplies it through --set-file.
+broker:
+  url: tls://nats:4222
+  token: ""
+  requestTimeout: 5s
+  # Secret holding the stand CA, mounted at /run/flowai/stand-ca.
+  caSecret: stand-ca
+  caKey: ca.pem
+
+# HTTP edges called with the claim token.
+envRegistryURL: http://env-registry:8080
+modelRegistryURL: http://model-registry:8080
+
+storageClass:
+  name: local-path
+
+persistence:
+  size: 1Gi
+
+executor:
+  maxParallelTasks: 2
+  # Seconds running tasks may finish after SIGTERM; the Pod's
+  # terminationGracePeriodSeconds is this value plus 30.
+  drainTimeoutSeconds: 30
+  heartbeatInterval: 15s
+  heartbeatMissLimit: 3
+  connectionWait: 600s
+  pendingRecheckInterval: 30s
+  # Writable volume: config/ holds the installed configuration and the
+  # publisher sequence, cache/ the recovery cache.
+  dataDir: /var/lib/flowai/executor-k8s
+  finishedCleanupDelay: 0s
+  failedCleanupDelay: 0s
+  logLevel: info
+  # Labels added to every task Pod; the LiteLLM chart's
+  # networkPolicy.data.from must admit them.
+  litellmDataPodLabels:
+    flowai.io/litellm-data: client
+
+openhands:
+  port: 8000
+  llmUsageID: flowai-executor
+  workspace: /workspace/project
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

@@ -1,0 +1,14 @@
+{
+  "stream_name": "ALL_EVENT",
+  "config": {
+    "durable_name": "env-registry-task-archived",
+    "filter_subject": "task-manager.event.archived.sub",
+    "ack_policy": "explicit",
+    "ack_wait": 30000000000,
+    "max_deliver": -1,
+    "deliver_policy": "all",
+    "replay_policy": "instant",
+    "max_ack_pending": 256
+  },
+  "action": "create"
+}

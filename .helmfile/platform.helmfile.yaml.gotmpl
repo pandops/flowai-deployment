@@ -1,0 +1,102 @@
+{{- $namespace := required "namespace" .Values.namespace }}
+{{- if or (not (regexMatch "^[a-z0-9][a-z0-9-]{0,58}-dev$" $namespace)) (hasPrefix "kube-" $namespace) }}
+{{- fail "namespace must identify an owned worktree" }}
+{{- end }}
+{{- $mode := required "storageMode" .Values.storageMode }}
+{{- if not (has $mode (list "adopt" "fresh")) }}{{ fail "storageMode must be adopt or fresh" }}{{ end }}
+{{- $refs := required "protectedReferences" .Values.protectedReferences }}
+{{- if ne $refs.namespace $namespace }}{{ fail "protectedReferences.namespace" }}{{ end }}
+{{- $shared := required "protectedReferences.sharedPlatform" $refs.sharedPlatform }}
+helmDefaults:
+  createNamespace: false
+  wait: true
+  timeout: 300
+releases:
+  - name: postgres
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/postgres
+    needs: []
+    values:
+      - storageMode: {{ $mode }}
+        tls: {{ $refs.tls.platformPostgresTLS | toJson }}
+        standCA: {{ $refs.tls.standCA | toJson }}
+        platformDatabaseAdmin: {{ $shared.platformDatabaseAdmin | toJson }}
+        serviceDatabaseRole: {{ $shared.serviceDatabaseRole | toJson }}
+  - name: nats
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/nats
+    needs: []
+    values:
+      - storageMode: {{ $mode }}
+        tls: {{ $refs.tls.natsTLS | toJson }}
+        standCA: {{ $refs.tls.standCA | toJson }}
+        natsBootstrap: {{ $shared.natsBootstrap | toJson }}
+{{- with (getOrNil "identityRouting" .Values) }}
+{{- $routing := . }}
+{{- $target := required "identityRouting.target" (getOrNil "target" $routing) }}
+{{- if ne $target.namespace $namespace }}{{ fail "identityRouting.target.namespace" }}{{ end }}
+{{- if not (regexMatch "^[0-9]{1,3}([.][0-9]{1,3}){3}$" $target.lanAddress) }}{{ fail "identityRouting.target.lanAddress" }}{{ end }}
+{{- $port := int $target.worktreePort }}
+{{- if or (lt $port 59000) (gt $port 59999) }}{{ fail "identityRouting.target.worktreePort" }}{{ end }}
+{{- if not (has $target.phase (list "development" "test" "demo" "uat")) }}{{ fail "identityRouting.target.phase" }}{{ end }}
+{{- if has $target.phase (list "demo" "uat") }}{{ $port = 4173 }}{{ end }}
+{{- if ne $target.origin (printf "https://%s:%d" $target.lanAddress $port) }}{{ fail "identityRouting.target.origin" }}{{ end }}
+{{- $bindings := required "protectedReferences.identityRouting" $refs.identityRouting }}
+  - name: litellm-gateway
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/litellm-gateway
+    needs: []
+    timeout: 900
+    values:
+      - storageMode: {{ $mode }}
+        image: {{ required "identityRouting.liteLLMImage" $routing.liteLLMImage | quote }}
+        auth:
+          existingSecret: {{ required "liteLLMGatewayAuth.name" $bindings.liteLLMGatewayAuth.name | quote }}
+          databaseSecret: {{ required "liteLLMDatabase.name" $bindings.liteLLMDatabase.name | quote }}
+        providerTrust: {{ getOrNil "liteLLMProviderTrust" $bindings | default dict | toJson }}
+        budgetReset: {minIntervalSeconds: 20, maxIntervalSeconds: 25}
+  - name: keycloak
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/keycloak
+    needs: []
+    timeout: 600
+    values:
+      - storageMode: {{ $mode }}
+        origin: {{ $target.origin | quote }}
+        adoptionImage: {{ getOrNil "keycloakAdoptionImage" $routing | default "" | quote }}
+        bootstrap: {{ getOrNil "keycloakBootstrap" $bindings | default dict | toJson }}
+{{- $names := list "admin-panel" "api-gateway" "audit" "env-registry" "executor-registry" "flow-registry" "journal" "model-registry" "source-controller" "task-manager" "team-registry" "web-ui" }}
+{{- $workloads := required "platformWorkloads" (getOrNil "platformWorkloads" $.Values) }}
+{{- if ne (keys $workloads | sortAlpha | join ",") (join "," $names) }}
+{{- fail "platformWorkloads must contain the exact workload set" }}
+{{- end }}
+{{- range $name, $definition := $workloads }}
+  - name: {{ $name }}
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/platform-workload
+    needs: [{{ range $index, $need := $definition.needs }}{{ if $index }}, {{ end }}{{ printf "%s/%s" $namespace $need | quote }}{{ end }}]
+    {{- if hasKey $definition "wait" }}
+    wait: {{ $definition.wait }}
+    {{- end }}
+    values:
+      - {{ $definition.values | toJson }}
+{{- end }}
+  - name: ingress
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/ingress
+    # Gateway creates its Service without waiting for OIDC discovery over this ingress.
+    needs: [{{ range $index, $need := list "keycloak" "source-controller" "admin-panel" "api-gateway" "web-ui" }}{{ if $index }}, {{ end }}{{ printf "%s/%s" $namespace $need | quote }}{{ end }}]
+    values:
+      - lanAddress: {{ $target.lanAddress | quote }}
+        port: {{ $port }}
+        nodePort: {{ getOrNil "ingressNodePort" $routing | default 0 }}
+        tls: {{ $refs.tls.ingressTLS | toJson }}
+  - name: keycloak-client
+    namespace: {{ $namespace | quote }}
+    chart: ./charts/keycloak-client
+    needs: [{{ printf "%s/ingress" $namespace | quote }}]
+    values:
+      - origin: {{ $target.origin | quote }}
+        admin: {{ $bindings.keycloakReconcile | toJson }}
+        standCA: {{ $refs.tls.standCA | toJson }}
+{{- end }}
